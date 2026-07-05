@@ -16,6 +16,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 JELLYFIN_SRC="$(cd "$REPO_ROOT/../jellyfin-src" && pwd)"
+JELLYFIN_WEB="$(cd "$REPO_ROOT/../jellyfin-web" && pwd)"   # sibling checkout; provides the web UI (dist/)
 REGISTRY="harbor.bne1.ouchi.com.au/applications"
 SERVER_IMG="$REGISTRY/jellyfin-distributed-server"    # all-in-one (plugin baked in) — non-operator docker path
 WORKER_IMG="$REGISTRY/jellyfin-distributed-worker"    # horizontally-scaled ffmpeg worker
@@ -37,10 +38,17 @@ dotnet publish "$JELLYFIN_SRC/Jellyfin.Server/Jellyfin.Server.csproj" -c Release
 dotnet publish "$REPO_ROOT/src/Worker/Jellyfin.Plugin.DistributedTranscoding.Worker.csproj" -c Release -o /tmp/jf-worker >/dev/null
 dotnet build "$REPO_ROOT/src/Plugin/Jellyfin.Plugin.DistributedTranscoding.csproj" -c Release >/dev/null
 
+# Build the Jellyfin web UI (matched to the server commit) if not already built.
+if [ ! -f "$JELLYFIN_WEB/dist/index.html" ]; then
+  echo "[build-push] building jellyfin-web (npm ci && build:production)..."
+  ( cd "$JELLYFIN_WEB" && npm ci && npm run build:production ) >/dev/null
+fi
+
 # --- server context ---
 SCTX=/tmp/jf-server-ctx
-rm -rf "$SCTX"; mkdir -p "$SCTX/server" "$SCTX/plugin"
+rm -rf "$SCTX"; mkdir -p "$SCTX/server" "$SCTX/plugin" "$SCTX/web"
 cp -r /tmp/jf-publish/. "$SCTX/server/"
+cp -r "$JELLYFIN_WEB/dist/." "$SCTX/web/"
 cp "$REPO_ROOT"/src/Plugin/bin/Release/net10.0/*.dll "$SCTX/plugin/"
 cp "$REPO_ROOT"/src/Plugin/bin/Release/net10.0/meta.json "$SCTX/plugin/"
 cp "$REPO_ROOT"/docker/Dockerfile.server "$SCTX/Dockerfile"
@@ -55,8 +63,9 @@ cp "$REPO_ROOT"/docker/worker-entrypoint.sh "$WCTX/worker-entrypoint.sh"
 
 # --- server-base context (plugin-free v12 for JellyOps) ---
 SBCTX=/tmp/jf-serverbase-ctx
-rm -rf "$SBCTX"; mkdir -p "$SBCTX/server"
+rm -rf "$SBCTX"; mkdir -p "$SBCTX/server" "$SBCTX/web"
 cp -r /tmp/jf-publish/. "$SBCTX/server/"
+cp -r "$JELLYFIN_WEB/dist/." "$SBCTX/web/"
 cp "$REPO_ROOT"/docker/Dockerfile.server-base "$SBCTX/Dockerfile"
 cp "$REPO_ROOT"/docker/server-entrypoint.sh "$SBCTX/server-entrypoint.sh"
 
@@ -73,8 +82,10 @@ echo "[build-push] building server image (all-in-one)..."
 docker build -t "$SERVER_IMG:$TAG" -t "$SERVER_IMG:latest" "$SCTX"
 echo "[build-push] building worker image..."
 docker build -t "$WORKER_IMG:$TAG" -t "$WORKER_IMG:latest" "$WCTX"
-echo "[build-push] building server-base image (plugin-free v12)..."
-docker build -t "$SERVERBASE_IMG:$SERVER_VERSION" -t "$SERVERBASE_IMG:$TAG" -t "$SERVERBASE_IMG:latest" "$SBCTX"
+echo "[build-push] building server-base image (plugin-free v12, web UI bundled)..."
+# The -web tag is a distinct pull target so a running node re-pulls when only the web
+# bundle changed (IfNotPresent won't re-pull an overwritten :12.0.0). Both parse to ABI 12.0.0.
+docker build -t "$SERVERBASE_IMG:$SERVER_VERSION" -t "$SERVERBASE_IMG:$SERVER_VERSION-web" -t "$SERVERBASE_IMG:$TAG" -t "$SERVERBASE_IMG:latest" "$SBCTX"
 echo "[build-push] building plugin image (image-volume payload)..."
 # --provenance=false keeps the payload a single, plain manifest (no attestation index)
 # so the kubelet mounts the image-volume filesystem cleanly.
@@ -86,6 +97,7 @@ docker push "$SERVER_IMG:latest"
 docker push "$WORKER_IMG:$TAG"
 docker push "$WORKER_IMG:latest"
 docker push "$SERVERBASE_IMG:$SERVER_VERSION"
+docker push "$SERVERBASE_IMG:$SERVER_VERSION-web"
 docker push "$SERVERBASE_IMG:$TAG"
 docker push "$SERVERBASE_IMG:latest"
 docker push "$PLUGIN_IMG:$PLUGIN_VERSION"

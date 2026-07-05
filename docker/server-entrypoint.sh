@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[server] starting jellyfin (headless) ..."
-exec dotnet /jellyfin/jellyfin.dll --datadir /config --nowebclient --ffmpeg /usr/bin/ffmpeg
+echo "[server] starting jellyfin (web UI at /web) ..."
+exec dotnet /jellyfin/jellyfin.dll --datadir /config --ffmpeg /usr/bin/ffmpeg

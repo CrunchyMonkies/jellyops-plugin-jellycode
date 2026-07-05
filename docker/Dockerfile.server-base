@@ -5,8 +5,8 @@
 # the Jellyfin CR `spec.image` at this image; the operator parses the `:12.0.0` tag to
 # satisfy the plugin's targetAbi (12.0.0.0), so keep a v12 version tag on it.
 #
-# Headless (no web client); drive via the HTTP API. Once the plugin is injected it hosts
-# the gRPC mesh listener on :9090, which worker pods dial.
+# Serves the Jellyfin web UI at /web (jellyfin-web bundled below). Once the plugin is
+# injected it also hosts the gRPC mesh listener on :9090, which worker pods dial.
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 
 RUN apt-get update \
@@ -14,6 +14,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY server/ /jellyfin/
+# Jellyfin web UI (built from jellyfin-web, matched to the server commit). The server
+# serves it from <binary dir>/jellyfin-web by default, so no --webdir flag is needed.
+COPY web/ /jellyfin/jellyfin-web/
 COPY server-entrypoint.sh /server-entrypoint.sh
 RUN chmod +x /server-entrypoint.sh
 

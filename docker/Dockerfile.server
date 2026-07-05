@@ -1,6 +1,6 @@
 # Jellyfin v12 (built from ../jellyfin-src) + the Distributed Transcoding plugin. No embedded worker —
 # workers run as separate pods/containers and dial this server's gRPC mesh listener on :9090.
-# Headless (no web client); drive via the HTTP API.
+# Serves the Jellyfin web UI at /web (jellyfin-web bundled below).
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 
 RUN apt-get update \
@@ -8,6 +8,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY server/ /jellyfin/
+# Jellyfin web UI, served from the default <binary dir>/jellyfin-web path.
+COPY web/ /jellyfin/jellyfin-web/
 # JSON-array form required: destination contains a space.
 COPY ["plugin/", "/config/plugins/Distributed Transcoding_0.0.1.0/"]
 COPY server-entrypoint.sh /server-entrypoint.sh
