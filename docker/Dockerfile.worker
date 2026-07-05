@@ -1,20 +1,62 @@
 # Standalone distributed-transcoding worker pod. Dials a Jellyfin server running the plugin's gRPC
 # mesh listener, runs ffmpeg, and streams segments back. This is the horizontally-scaled artifact.
-FROM mcr.microsoft.com/dotnet/aspnet:10.0
+#
+# Multi-stage, multi-target: the worker is built from source (self-contained — it only references
+# src/Contracts, no jellyfin-src), then assembled into one of three hardware variants selected with
+# `docker build --target <cpu|intel|nvidia>`. Build context is the repo root.
+#
+#   cpu     software encoding (distro ffmpeg)
+#   intel   VAAPI/QSV via jellyfin-ffmpeg (bundles the Intel iHD driver) — needs /dev/dri
+#   nvidia  NVENC via jellyfin-ffmpeg — needs the NVIDIA container runtime + a GPU
 
+# ---- build the worker from source ----
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /build
+COPY Directory.Build.props ./
+COPY src/ ./src/
+RUN dotnet publish src/Worker/Jellyfin.Plugin.DistributedTranscoding.Worker.csproj -c Release -o /out
+
+# ---- common runtime base (no ffmpeg yet; each variant adds its own) ----
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime-base
+COPY --from=build /out /worker/
+COPY docker/worker-entrypoint.sh /worker-entrypoint.sh
+RUN chmod +x /worker-entrypoint.sh
+# Configurable via env (overridable per Deployment). DT_FFMPEG is set per variant below.
+ENV DT_SERVER=http://jellyfin:9090 \
+    DT_WORKER_ID= \
+    DT_MAX_CONCURRENT=2 \
+    DT_SCRATCH=/tmp/worker
+ENTRYPOINT ["/worker-entrypoint.sh"]
+
+# ---- cpu: software encoding via distro ffmpeg ----
+FROM runtime-base AS cpu
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+ENV DT_FFMPEG=/usr/bin/ffmpeg
 
-COPY worker/ /worker/
-COPY worker-entrypoint.sh /worker-entrypoint.sh
-RUN chmod +x /worker-entrypoint.sh
+# ---- jellyfin-ffmpeg base (VAAPI + QSV + NVENC + bundled Intel iHD driver) ----
+# Shared by the intel and nvidia variants. The apt suite is derived from the base image's own
+# codename so it tracks the .NET base OS (Ubuntu noble today).
+FROM runtime-base AS jellyfin-ffmpeg
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl gnupg ca-certificates fonts-dejavu-core \
+    && install -d /etc/apt/keyrings \
+    && curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key | gpg --dearmor -o /etc/apt/keyrings/jellyfin.gpg \
+    && . /etc/os-release \
+    && echo "deb [signed-by=/etc/apt/keyrings/jellyfin.gpg] https://repo.jellyfin.org/${ID} ${VERSION_CODENAME} main" \
+         > /etc/apt/sources.list.d/jellyfin.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends jellyfin-ffmpeg7 \
+    && apt-get purge -y curl gnupg && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+ENV DT_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg
 
-# Configurable via env (overridable per Deployment).
-ENV DT_SERVER=http://jellyfin:9090 \
-    DT_WORKER_ID= \
-    DT_FFMPEG=/usr/bin/ffmpeg \
-    DT_MAX_CONCURRENT=2 \
-    DT_SCRATCH=/tmp/worker
+# ---- intel: VAAPI/QSV (Intel iGPU / Arc / Xe) ----
+FROM jellyfin-ffmpeg AS intel
+ENV LIBVA_DRIVER_NAME=iHD
 
-ENTRYPOINT ["/worker-entrypoint.sh"]
+# ---- nvidia: NVENC ----
+FROM jellyfin-ffmpeg AS nvidia
+ENV NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,video,utility

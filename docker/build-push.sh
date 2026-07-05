@@ -33,10 +33,10 @@ PLUGIN_VERSION="0.0.1.0"
 echo "[build-push] tag=$TAG"
 
 echo "[build-push] publishing artifacts..."
-rm -rf /tmp/jf-publish /tmp/jf-worker
+rm -rf /tmp/jf-publish
 dotnet publish "$JELLYFIN_SRC/Jellyfin.Server/Jellyfin.Server.csproj" -c Release -o /tmp/jf-publish >/dev/null
-dotnet publish "$REPO_ROOT/src/Worker/Jellyfin.Plugin.DistributedTranscoding.Worker.csproj" -c Release -o /tmp/jf-worker >/dev/null
 dotnet build "$REPO_ROOT/src/Plugin/Jellyfin.Plugin.DistributedTranscoding.csproj" -c Release >/dev/null
+# Note: the worker is built from source by docker/Dockerfile.worker (multi-stage), so it needs no host publish here.
 
 # Build the Jellyfin web UI (matched to the server commit) if not already built.
 if [ ! -f "$JELLYFIN_WEB/dist/index.html" ]; then
@@ -53,13 +53,6 @@ cp "$REPO_ROOT"/src/Plugin/bin/Release/net10.0/*.dll "$SCTX/plugin/"
 cp "$REPO_ROOT"/src/Plugin/bin/Release/net10.0/meta.json "$SCTX/plugin/"
 cp "$REPO_ROOT"/docker/Dockerfile.server "$SCTX/Dockerfile"
 cp "$REPO_ROOT"/docker/server-entrypoint.sh "$SCTX/server-entrypoint.sh"
-
-# --- worker context ---
-WCTX=/tmp/jf-worker-ctx
-rm -rf "$WCTX"; mkdir -p "$WCTX/worker"
-cp -r /tmp/jf-worker/. "$WCTX/worker/"
-cp "$REPO_ROOT"/docker/Dockerfile.worker "$WCTX/Dockerfile"
-cp "$REPO_ROOT"/docker/worker-entrypoint.sh "$WCTX/worker-entrypoint.sh"
 
 # --- server-base context (plugin-free v12 for JellyOps) ---
 SBCTX=/tmp/jf-serverbase-ctx
@@ -80,8 +73,8 @@ cp "$REPO_ROOT"/docker/Dockerfile.plugin "$PCTX/Dockerfile"
 
 echo "[build-push] building server image (all-in-one)..."
 docker build -t "$SERVER_IMG:$TAG" -t "$SERVER_IMG:latest" "$SCTX"
-echo "[build-push] building worker image..."
-docker build -t "$WORKER_IMG:$TAG" -t "$WORKER_IMG:latest" "$WCTX"
+echo "[build-push] building worker image (cpu variant)..."
+docker build -f "$REPO_ROOT/docker/Dockerfile.worker" --target cpu -t "$WORKER_IMG:$TAG" -t "$WORKER_IMG:latest" "$REPO_ROOT"
 echo "[build-push] building server-base image (plugin-free v12, web UI bundled)..."
 # The -web tag is a distinct pull target so a running node re-pulls when only the web
 # bundle changed (IfNotPresent won't re-pull an overwritten :12.0.0). Both parse to ABI 12.0.0.

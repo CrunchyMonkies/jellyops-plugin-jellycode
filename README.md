@@ -94,6 +94,32 @@ worker scratch dir ends up empty — proving the segments traveled over the chan
 > `AuthenticateByName`). The `X-Emby-Authorization` header and `api_key=` query param did not parse on
 > this v12 build.
 
+## Worker images (GitHub Container Registry)
+
+The worker is published to GHCR by the [`worker-images`](.github/workflows/worker-images.yml) workflow
+on every push to `main` (and on `v*` tags) as a **single package with per-variant tags**:
+
+**`ghcr.io/crunchymonkies/jellyops-plugin-jellycode/worker`**
+
+| Tag | ffmpeg | Runtime requirement |
+|---|---|---|
+| `:cpu` (`:latest`) | distro ffmpeg (software x264/x265) | none |
+| `:intel` | jellyfin-ffmpeg (VAAPI/QSV, bundled Intel iHD driver) | an Intel GPU render node — `/dev/dri` (or the Intel device-plugin resource `gpu.intel.com/xe` / `i915`), and Jellyfin set to `HardwareAccelerationType: vaapi` |
+| `:nvidia` | jellyfin-ffmpeg (NVENC) | the NVIDIA container runtime + a GPU (`nvidia.com/gpu`, `runtimeClassName: nvidia`), and Jellyfin set to `nvenc` |
+
+Tags also include `:<variant>-<sha>` (every build) and `:<variant>-<tag>` (on releases). Pull:
+
+```bash
+docker pull ghcr.io/crunchymonkies/jellyops-plugin-jellycode/worker:cpu
+docker pull ghcr.io/crunchymonkies/jellyops-plugin-jellycode/worker:intel
+docker pull ghcr.io/crunchymonkies/jellyops-plugin-jellycode/worker:nvidia
+```
+
+> The HW variants only add ffmpeg + drivers; the worker binary is identical. The device path in the
+> ffmpeg args comes from the Jellyfin server's config and is passed through unchanged, so the worker
+> must expose the same `/dev/dri` render node the server is configured for. On first publish the GHCR
+> package is **private** — flip it to public in the repo's *Packages* settings if you want open pulls.
+
 ## Container images (Harbor)
 
 Published to `harbor.bne1.ouchi.com.au/applications/`:
