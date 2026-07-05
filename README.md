@@ -175,6 +175,51 @@ image; it injects `jellyfin-distributed-plugin` via `imageVolumeCopy` and runs t
 same media claim at the same path and dial the in-pod gRPC mesh on `:9090`. Requires a K8s ≥ 1.33 cluster
 with image volumes enabled.
 
+## Hardware transcoding (Intel / NVIDIA)
+
+ffmpeg runs on the **worker**, so the GPU must be on the **worker** pods — not the Jellyfin server. Pick the
+matching worker image variant, give the worker pods the GPU, and enable HW accel in Jellyfin. Because Phase 0
+has no hwaccel-aware scheduling, run a **homogeneous** worker pool (all workers the same variant).
+
+**Key caveat (distributed-specific):** the Jellyfin *server* builds the ffmpeg command. For **VAAPI** it only
+adds the `-init_hw_device` after probing a *local* render device — so if the server has no GPU (e.g. it's pinned
+to a non-GPU node), it emits a `*_vaapi` encoder with no device set up. The `:intel` image handles this: `DT_FFMPEG`
+points at a small wrapper (`docker/vaapi-ffmpeg-wrap.sh`) that injects `-init_hw_device vaapi=va:<render node>
+-filter_hw_device va` when it sees a `*_vaapi` job with no device — so the worker HW-encodes regardless. (If your
+server *does* have the GPU, plain VAAPI works without the wrapper.)
+
+### Intel (VAAPI) — Kubernetes
+
+```yaml
+# JellyfinPlugin worker workload
+image:
+  reference: ghcr.io/crunchymonkies/jellyops-plugin-jellycode/worker:intel   # jellyfin-ffmpeg8 + wrapper
+resources:
+  limits:
+    gpu.intel.com/xe: "1"          # (or gpu.intel.com/i915) — schedules onto a GPU node + injects /dev/dri
+tolerations:                        # only if the GPU node is tainted
+  - {key: dedicated, operator: Equal, value: intel-gpu, effect: NoExecute}
+env:
+  - {name: DT_FFMPEG, value: /usr/local/bin/ffmpeg-vaapi-wrap}
+```
+
+Then set Jellyfin → Playback → **VAAPI**, device `/dev/dri/renderD128`. HW **encode** (`h264_vaapi`/`hevc_vaapi`)
+runs on the GPU; decode stays on CPU unless the server also has the device. Note: **QSV/oneVPL fails on current
+Xe/Battlemage cards** (`-17` child-device error) — use VAAPI.
+
+### NVIDIA (NVENC) — Kubernetes
+
+```yaml
+image:
+  reference: ghcr.io/crunchymonkies/jellyops-plugin-jellycode/worker:nvidia  # jellyfin-ffmpeg8 (NVENC)
+resources:
+  limits:
+    nvidia.com/gpu: "1"
+```
+
+Requires the NVIDIA container runtime (`runtimeClassName: nvidia` or the node default) so the driver libs are
+injected. Then set Jellyfin → Playback → **NVENC**. NVENC needs no `-init_hw_device`, so no wrapper is used.
+
 ## Run against a real Jellyfin
 
 1. **Deploy the plugin:**

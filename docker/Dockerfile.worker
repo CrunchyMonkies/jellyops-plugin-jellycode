@@ -39,6 +39,9 @@ ENV DT_FFMPEG=/usr/bin/ffmpeg
 # Shared by the intel and nvidia variants. The apt suite is derived from the base image's own
 # codename so it tracks the .NET base OS (Ubuntu noble today).
 FROM runtime-base AS jellyfin-ffmpeg
+# jellyfin-ffmpeg major version (jellyfin-ffmpeg7 | jellyfin-ffmpeg8). ffmpeg8 ships a newer
+# oneVPL/driver stack with better support for the latest Intel Arc/Xe (Battlemage) GPUs.
+ARG JELLYFIN_FFMPEG=jellyfin-ffmpeg8
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl gnupg ca-certificates fonts-dejavu-core \
     && install -d /etc/apt/keyrings \
@@ -47,14 +50,20 @@ RUN apt-get update \
     && echo "deb [signed-by=/etc/apt/keyrings/jellyfin.gpg] https://repo.jellyfin.org/${ID} ${VERSION_CODENAME} main" \
          > /etc/apt/sources.list.d/jellyfin.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends jellyfin-ffmpeg7 \
+    && apt-get install -y --no-install-recommends "${JELLYFIN_FFMPEG}" \
     && apt-get purge -y curl gnupg && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 ENV DT_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg
 
-# ---- intel: VAAPI/QSV (Intel iGPU / Arc / Xe) ----
+# ---- intel: VAAPI (Intel iGPU / Arc / Xe) ----
+# DT_FFMPEG points at a wrapper that completes the VAAPI device setup the (deviceless) Jellyfin
+# server omits — so the worker HW-encodes even when the server can't probe a local GPU. QSV
+# (oneVPL) is intentionally not used: it fails on current Xe/Battlemage cards.
 FROM jellyfin-ffmpeg AS intel
-ENV LIBVA_DRIVER_NAME=iHD
+COPY docker/vaapi-ffmpeg-wrap.sh /usr/local/bin/ffmpeg-vaapi-wrap
+RUN chmod +x /usr/local/bin/ffmpeg-vaapi-wrap
+ENV LIBVA_DRIVER_NAME=iHD \
+    DT_FFMPEG=/usr/local/bin/ffmpeg-vaapi-wrap
 
 # ---- nvidia: NVENC ----
 FROM jellyfin-ffmpeg AS nvidia

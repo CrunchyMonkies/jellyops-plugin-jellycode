@@ -26,7 +26,11 @@ public sealed class FfmpegJob
     public FfmpegJob(AssignJob assign, string ffmpegPath, string scratchRoot, ChannelWriter<WorkerFrame> outbound, Action<string> onFinished)
     {
         _assign = assign;
-        _ffmpegPath = string.IsNullOrEmpty(assign.EncoderPath) ? ffmpegPath : assign.EncoderPath;
+        // Always run the worker's OWN ffmpeg (from --ffmpeg/DT_FFMPEG). assign.EncoderPath is the
+        // server's local ffmpeg path, which is meaningless in the worker container and may point at a
+        // different build than the worker ships (e.g. the worker uses jellyfin-ffmpeg for HW encode).
+        // Only fall back to the server's path if the worker was given none.
+        _ffmpegPath = string.IsNullOrEmpty(ffmpegPath) ? assign.EncoderPath : ffmpegPath;
         _localDir = Path.Combine(scratchRoot, assign.JobId);
         _outbound = outbound;
         _onFinished = onFinished;
