@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -23,7 +24,12 @@ public sealed class WorkerAgent
     private readonly int _maxConcurrent;
 
     private readonly ConcurrentDictionary<string, FfmpegJob> _jobs = new(StringComparer.Ordinal);
-    private readonly Channel<WorkerFrame> _outbound =
+
+    // Recreated on every (re)connection: a Channel, once completed on disconnect, can never accept
+    // writes again. A single lifetime channel would leave the worker able to Register (written
+    // directly to the stream) but unable to send JobAccepted/Heartbeat/SegmentData after the first
+    // reconnect. See ConnectOnceAsync.
+    private Channel<WorkerFrame> _outbound =
         Channel.CreateUnbounded<WorkerFrame>(new UnboundedChannelOptions { SingleReader = true });
 
     private volatile bool _draining;
@@ -68,11 +74,29 @@ public sealed class WorkerAgent
 
     private async Task ConnectOnceAsync(CancellationToken cancellationToken)
     {
-        using var channel = GrpcChannel.ForAddress(_serverUrl);
+        // Keepalive pings keep the long-lived stream alive so the server's Kestrel doesn't close it
+        // as idle (observed as "HTTP/2 server closed the connection NO_ERROR"), which would otherwise
+        // force frequent reconnects.
+        using var channel = GrpcChannel.ForAddress(_serverUrl, new GrpcChannelOptions
+        {
+            HttpHandler = new SocketsHttpHandler
+            {
+                EnableMultipleHttp2Connections = true,
+                PooledConnectionIdleTimeout = Timeout.InfiniteTimeSpan,
+                KeepAlivePingDelay = TimeSpan.FromSeconds(30),
+                KeepAlivePingTimeout = TimeSpan.FromSeconds(10),
+                KeepAlivePingPolicy = HttpKeepAlivePingPolicy.Always,
+            },
+        });
         var client = new TranscodeMesh.TranscodeMeshClient(channel);
         using var call = client.Connect(cancellationToken: cancellationToken);
 
         Console.WriteLine($"[worker] connected to {_serverUrl}");
+
+        // Fresh outbound channel for this connection: the previous one was permanently completed on
+        // the last disconnect, so reusing it would silently drop every frame except Register (which
+        // is written directly to the stream below).
+        _outbound = Channel.CreateUnbounded<WorkerFrame>(new UnboundedChannelOptions { SingleReader = true });
 
         // Register must be the first frame.
         var register = new WorkerFrame
