@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -36,13 +37,26 @@ public sealed class WorkerRegistry
     /// <summary>
     /// Waits up to <paramref name="timeout"/> for a worker with a free slot and returns it.
     /// </summary>
-    public async Task<WorkerConnection> GetWorkerAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    public Task<WorkerConnection> GetWorkerAsync(TimeSpan timeout, CancellationToken cancellationToken)
+        => GetWorkerAsync(timeout, _ => true, null, cancellationToken);
+
+    /// <summary>
+    /// Waits up to <paramref name="timeout"/> for a worker matching <paramref name="predicate"/>
+    /// with a free slot, excluding any workers in <paramref name="excludeWorkerIds"/>.
+    /// </summary>
+    public async Task<WorkerConnection> GetWorkerAsync(
+        TimeSpan timeout,
+        Func<WorkerConnection, bool> predicate,
+        ISet<string>? excludeWorkerIds,
+        CancellationToken cancellationToken)
     {
         var deadline = DateTime.UtcNow + timeout;
         while (true)
         {
             var candidate = _workers.Values
                 .Where(w => w.FreeSlots > 0)
+                .Where(w => excludeWorkerIds is null || !excludeWorkerIds.Contains(w.WorkerId))
+                .Where(predicate)
                 .OrderByDescending(w => w.FreeSlots)
                 .FirstOrDefault();
 

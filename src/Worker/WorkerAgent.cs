@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Net.Http;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -22,6 +24,8 @@ public sealed class WorkerAgent
     private readonly string _ffmpegPath;
     private readonly string _scratchRoot;
     private readonly int _maxConcurrent;
+    private readonly string _workerClass;
+    private readonly string[] _hwAccels;
 
     private readonly ConcurrentDictionary<string, FfmpegJob> _jobs = new(StringComparer.Ordinal);
 
@@ -41,6 +45,22 @@ public sealed class WorkerAgent
         _ffmpegPath = ffmpegPath;
         _scratchRoot = scratchRoot;
         _maxConcurrent = Math.Max(1, maxConcurrent);
+
+        _workerClass = Environment.GetEnvironmentVariable("DT_CLASS")?.Trim().ToLowerInvariant() ?? "cpu";
+        if (string.Equals(_workerClass, "hw", StringComparison.Ordinal))
+        {
+            var extra = Environment.GetEnvironmentVariable("DT_HWACCELS");
+            _hwAccels = string.IsNullOrWhiteSpace(extra)
+                ? new[] { "vaapi" }
+                : extra.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                       .Append("vaapi")
+                       .Distinct(StringComparer.OrdinalIgnoreCase)
+                       .ToArray();
+        }
+        else
+        {
+            _hwAccels = Array.Empty<string>();
+        }
     }
 
     public async Task<int> RunAsync(CancellationToken cancellationToken)
@@ -99,15 +119,14 @@ public sealed class WorkerAgent
         _outbound = Channel.CreateUnbounded<WorkerFrame>(new UnboundedChannelOptions { SingleReader = true });
 
         // Register must be the first frame.
-        var register = new WorkerFrame
+        var reg = new Register
         {
-            Register = new Register
-            {
-                WorkerId = _workerId,
-                MaxConcurrent = _maxConcurrent,
-                FfmpegVersion = "unknown"
-            }
+            WorkerId = _workerId,
+            MaxConcurrent = _maxConcurrent,
+            FfmpegVersion = "unknown"
         };
+        reg.Hwaccels.AddRange(_hwAccels);
+        var register = new WorkerFrame { Register = reg };
         await call.RequestStream.WriteAsync(register, cancellationToken).ConfigureAwait(false);
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -154,6 +173,16 @@ public sealed class WorkerAgent
             _outbound.Writer.TryWrite(new WorkerFrame
             {
                 Accepted = new JobAccepted { JobId = assign.JobId, Accepted = false, Reason = _draining ? "draining" : "no free slots" }
+            });
+            return;
+        }
+
+        // Reject if the job requires vaapi but this worker is not hw-capable.
+        if (RequiresVaapi(assign.Arguments) && !Array.Exists(_hwAccels, h => string.Equals(h, "vaapi", StringComparison.OrdinalIgnoreCase)))
+        {
+            _outbound.Writer.TryWrite(new WorkerFrame
+            {
+                Accepted = new JobAccepted { JobId = assign.JobId, Accepted = false, Reason = "no vaapi" }
             });
             return;
         }
@@ -248,6 +277,12 @@ public sealed class WorkerAgent
         {
         }
     }
+
+    /// <summary>
+    /// Returns true if the ffmpeg argument string contains a vaapi encoder (e.g. h264_vaapi, hevc_vaapi).
+    /// </summary>
+    private static bool RequiresVaapi(string arguments)
+        => Regex.IsMatch(arguments, @"\b\w+_vaapi\b", RegexOptions.None, TimeSpan.FromMilliseconds(100));
 
     private static async Task Safe(Task task)
     {

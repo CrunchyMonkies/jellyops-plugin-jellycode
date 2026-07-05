@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Grpc.Core;
@@ -39,7 +41,8 @@ public sealed class TranscodeMeshService : TranscodeMesh.TranscodeMeshBase
         }
 
         var register = requestStream.Current.Register;
-        var worker = new WorkerConnection(register.WorkerId, Math.Max(1, register.MaxConcurrent));
+        var hwAccels = register.Hwaccels.Count > 0 ? (IReadOnlyList<string>)register.Hwaccels.ToArray() : Array.Empty<string>();
+        var worker = new WorkerConnection(register.WorkerId, Math.Max(1, register.MaxConcurrent), hwAccels);
         _registry.Add(worker);
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(token);

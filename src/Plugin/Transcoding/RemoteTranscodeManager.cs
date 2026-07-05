@@ -7,6 +7,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Data;
@@ -21,6 +22,7 @@ using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Controller.Session;
 using MediaBrowser.Controller.Streaming;
+using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Dlna;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.IO;
@@ -338,6 +340,53 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
     }
 
     // ----------------------------------------------------------------------------------------------
+    // Job classification and software fallback
+    // ----------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Classifies a job as hardware-encode (needs a vaapi-capable worker) or agnostic (copy, audio-only).
+    /// </summary>
+    private enum JobClass
+    {
+        /// <summary>The arguments contain a vaapi encoder — needs an hw-capable worker.</summary>
+        Hardware,
+
+        /// <summary>Video copy, audio-only, or software-only — can run on any worker.</summary>
+        Agnostic,
+    }
+
+    private static readonly Regex VaapiEncoderRegex = new(@"\b\w+_vaapi\b", RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
+
+    private static JobClass ClassifyJob(StreamState state, string commandLineArguments)
+    {
+        if (VaapiEncoderRegex.IsMatch(commandLineArguments))
+        {
+            return JobClass.Hardware;
+        }
+
+        // Copy codec or audio-only — GPU agnostic.
+        return JobClass.Agnostic;
+    }
+
+    /// <summary>
+    /// Builds a pure-software (libx264) HLS command line by deep-cloning the server's encoding options
+    /// with hardware acceleration disabled.
+    /// </summary>
+    private string BuildSoftwareCommandLine(StreamState state, string outputPath)
+    {
+        var opts = CloneEncodingOptions(_serverConfigurationManager.GetEncodingOptions());
+        opts.HardwareAccelerationType = HardwareAccelerationType.none;
+        opts.EnableHardwareEncoding = false;
+        return _encodingHelper.GetHlsVideoCommandLine(state, opts, outputPath, 0, true);
+    }
+
+    private static EncodingOptions CloneEncodingOptions(EncodingOptions source)
+    {
+        var json = JsonSerializer.SerializeToUtf8Bytes(source);
+        return JsonSerializer.Deserialize<EncodingOptions>(json)!;
+    }
+
+    // ----------------------------------------------------------------------------------------------
     // ITranscodeManager — StartFfMpeg (the seam: prep locally, run remotely)
     // ----------------------------------------------------------------------------------------------
 
@@ -392,67 +441,173 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
             }
         }
 
-        // Pick a worker before committing to bookkeeping so a zero-worker deployment fails cleanly.
-        WorkerConnection worker;
-        try
+        // Classify the job to decide pool routing.
+        var jobClass = ClassifyJob(state, commandLineArguments);
+        var excluded = new HashSet<string>(StringComparer.Ordinal);
+        var timeout = TimeSpan.FromSeconds(Config.FirstSegmentTimeoutSeconds);
+        const int MaxAttempts = 4;
+        var fallingBack = false;
+        string? softwareArgs = null;
+
+        TranscodingJob? transcodingJob = null;
+
+        for (int attempt = 1; attempt <= MaxAttempts; attempt++)
         {
-            worker = await _registry.GetWorkerAsync(TimeSpan.FromSeconds(Config.FirstSegmentTimeoutSeconds), cancellationTokenSource.Token).ConfigureAwait(false);
+            // Determine the predicate and arguments for this attempt.
+            Func<WorkerConnection, bool> predicate;
+            string currentArgs;
+
+            if (jobClass == JobClass.Hardware && !fallingBack)
+            {
+                predicate = w => w.CanVaapi;
+                currentArgs = commandLineArguments;
+            }
+            else if (jobClass == JobClass.Hardware && fallingBack)
+            {
+                softwareArgs ??= BuildSoftwareCommandLine(state, outputPath);
+                predicate = w => !w.CanVaapi;
+                currentArgs = softwareArgs;
+            }
+            else
+            {
+                // Agnostic: prefer CPU workers to keep the GPU free, but accept any.
+                currentArgs = commandLineArguments;
+                predicate = w => !w.CanVaapi;
+            }
+
+            // Pick a worker matching the predicate.
+            WorkerConnection worker;
+            try
+            {
+                worker = await _registry.GetWorkerAsync(timeout, predicate, excluded, cancellationTokenSource.Token).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                if (jobClass == JobClass.Agnostic && !fallingBack)
+                {
+                    // No CPU-only worker available — try any worker.
+                    fallingBack = true;
+                    try
+                    {
+                        worker = await _registry.GetWorkerAsync(timeout, _ => true, excluded, cancellationTokenSource.Token).ConfigureAwait(false);
+                    }
+                    catch (TimeoutException ex)
+                    {
+                        OnTranscodeFailedToStart(outputPath, transcodingJobType, state);
+                        throw new FfmpegException("No transcoding worker available.", ex);
+                    }
+                }
+                else if (jobClass == JobClass.Hardware && !fallingBack)
+                {
+                    // No hw worker available — fall back to software on a CPU worker.
+                    _logger.LogInformation("No vaapi worker available; falling back to software encode");
+                    fallingBack = true;
+                    continue;
+                }
+                else
+                {
+                    OnTranscodeFailedToStart(outputPath, transcodingJobType, state);
+                    throw new FfmpegException("No transcoding worker available.");
+                }
+            }
+
+            // Per-attempt bookkeeping — fresh job id, log stream, handle.
+            var jobId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+            transcodingJob = OnTranscodeBeginning(
+                outputPath,
+                state.Request.PlaySessionId,
+                state.MediaSource.LiveStreamId,
+                jobId,
+                transcodingJobType,
+                state.Request.DeviceId,
+                state,
+                cancellationTokenSource);
+
+            _logger.LogInformation(
+                "Assigning remote transcode {JobId} to worker {WorkerId} (attempt {Attempt}): {Args}",
+                transcodingJob.Id, worker.WorkerId, attempt, currentArgs);
+
+            var logStream = CreateLogStream(state, out var logFilePath);
+            await WriteLogHeaderAsync(logStream, state, currentArgs, cancellationTokenSource.Token).ConfigureAwait(false);
+            _logger.LogDebug("Remote transcode log: {LogFilePath}", logFilePath);
+
+            var handle = new RemoteJobHandle(transcodingJob.Id!, worker, directory, outputPath, transcodingJob, state, logStream);
+            _remoteJobs[transcodingJob.Id!] = handle;
+
+            var assign = new AssignJob
+            {
+                JobId = transcodingJob.Id,
+                EncoderPath = _mediaEncoder.EncoderPath,
+                Arguments = currentArgs,
+                Type = JobType.Hls,
+                OutputDir = directory,
+                PathMap = new PathMap()
+            };
+            assign.OutputGlobs.Add("*.ts");
+            assign.OutputGlobs.Add("*.mp4");
+            assign.OutputGlobs.Add("*.m3u8");
+
+            worker.TrySend(new ServerFrame { Assign = assign });
+            worker.FreeSlots = Math.Max(0, worker.FreeSlots - 1); // optimistic; corrected by heartbeat
+
+            // Wait for the worker to accept (bounded).
+            bool accepted;
+            try
+            {
+                using var acceptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationTokenSource.Token);
+                acceptCts.CancelAfter(timeout);
+                accepted = await handle.AcceptedTcs.Task.WaitAsync(acceptCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationTokenSource.IsCancellationRequested)
+            {
+                // The overall operation was cancelled — propagate immediately.
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Remote transcode {JobId} accept timed out from worker {WorkerId}", transcodingJob.Id, worker.WorkerId);
+                accepted = false;
+            }
+
+            if (accepted)
+            {
+                // Success — break out of the retry loop.
+                state.TranscodingJob = transcodingJob;
+                break;
+            }
+
+            // Clean up the failed attempt.
+            _logger.LogInformation("Worker {WorkerId} did not accept job {JobId}; cleaning up attempt {Attempt}", worker.WorkerId, transcodingJob.Id, attempt);
+            _remoteJobs.TryRemove(transcodingJob.Id!, out _);
+            worker.FreeSlots = Math.Min(worker.MaxConcurrent, worker.FreeSlots + 1);
+
+            lock (_activeTranscodingJobs)
+            {
+                _activeTranscodingJobs.Remove(transcodingJob);
+            }
+
+            logStream.Dispose();
+            excluded.Add(worker.WorkerId);
+
+            // If the reject implies a capability gap and we haven't fallen back yet, switch.
+            if (jobClass == JobClass.Hardware && !fallingBack)
+            {
+                _logger.LogInformation("Switching to software fallback for job after vaapi rejection");
+                fallingBack = true;
+                excluded.Clear(); // CPU workers haven't been tried yet.
+            }
+
+            if (attempt >= MaxAttempts)
+            {
+                OnTranscodeFailedToStart(outputPath, transcodingJobType, state);
+                throw new FfmpegException("Worker did not accept the transcoding job.");
+            }
         }
-        catch (TimeoutException ex)
+
+        if (transcodingJob is null)
         {
             OnTranscodeFailedToStart(outputPath, transcodingJobType, state);
-            throw new FfmpegException("No transcoding worker available.", ex);
-        }
-
-        var transcodingJob = OnTranscodeBeginning(
-            outputPath,
-            state.Request.PlaySessionId,
-            state.MediaSource.LiveStreamId,
-            Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture),
-            transcodingJobType,
-            state.Request.DeviceId,
-            state,
-            cancellationTokenSource);
-
-        _logger.LogInformation("Assigning remote transcode {JobId} to worker {WorkerId}: {Args}", transcodingJob.Id, worker.WorkerId, commandLineArguments);
-
-        var logStream = CreateLogStream(state, out var logFilePath);
-        await WriteLogHeaderAsync(logStream, state, commandLineArguments, cancellationTokenSource.Token).ConfigureAwait(false);
-        _logger.LogDebug("Remote transcode log: {LogFilePath}", logFilePath);
-
-        var handle = new RemoteJobHandle(transcodingJob.Id!, worker, directory, outputPath, transcodingJob, state, logStream);
-        _remoteJobs[transcodingJob.Id!] = handle;
-
-        var assign = new AssignJob
-        {
-            JobId = transcodingJob.Id,
-            EncoderPath = _mediaEncoder.EncoderPath,
-            Arguments = commandLineArguments,
-            Type = JobType.Hls,
-            OutputDir = directory,
-            PathMap = new PathMap()
-        };
-        assign.OutputGlobs.Add("*.ts");
-        assign.OutputGlobs.Add("*.mp4");
-        assign.OutputGlobs.Add("*.m3u8");
-
-        worker.TrySend(new ServerFrame { Assign = assign });
-        worker.FreeSlots = Math.Max(0, worker.FreeSlots - 1); // optimistic; corrected by heartbeat
-
-        state.TranscodingJob = transcodingJob;
-
-        // Wait for the worker to accept (bounded), then mirror the core WaitForPath contract.
-        try
-        {
-            using var acceptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationTokenSource.Token);
-            acceptCts.CancelAfter(TimeSpan.FromSeconds(Config.FirstSegmentTimeoutSeconds));
-            await handle.AcceptedTcs.Task.WaitAsync(acceptCts.Token).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Remote transcode {JobId} was not accepted by a worker", transcodingJob.Id);
-            await KillTranscodingJob(transcodingJob, false, _ => true).ConfigureAwait(false);
-            throw new FfmpegException("Worker did not accept the transcoding job.", ex);
+            throw new FfmpegException("No transcoding worker available.");
         }
 
         var ffmpegTargetFile = state.WaitForPath ?? outputPath;
@@ -704,16 +859,15 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
     {
         if (!_remoteJobs.TryGetValue(jobId, out var handle))
         {
+            // Handle was already cleaned up (previous attempt in the retry loop).
             return;
         }
 
-        if (accepted)
+        handle.AcceptedTcs.TrySetResult(accepted);
+
+        if (!accepted)
         {
-            handle.AcceptedTcs.TrySetResult(true);
-        }
-        else
-        {
-            handle.AcceptedTcs.TrySetException(new FfmpegException($"Worker rejected job: {reason}"));
+            _logger.LogWarning("Worker rejected job {JobId}: {Reason}", jobId, reason);
         }
     }
 
