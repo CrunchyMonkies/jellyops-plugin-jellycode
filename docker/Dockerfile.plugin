@@ -1,0 +1,25 @@
+# Plugin-only OCI image: the image-volume payload consumed by JellyOps.
+#
+# Its filesystem ROOT *is* the contents of the Jellyfin plugin directory —
+# meta.json plus our own assemblies and the third-party deps the host does not
+# provide (Grpc.*, Google.Protobuf). The host-owned Jellyfin/Emby/MediaBrowser
+# DLLs are already stripped by the plugin's StripHostAssemblies build target.
+#
+# JellyOps mounts this image read-only and, with `injection: imageVolumeCopy`,
+# copies the root into `/config/plugins/Distributed Transcoding_0.0.1.0/` via a
+# staging init container before Jellyfin starts (so Jellyfin can still write
+# meta.json status into a writable plugin dir). No base image is needed — image
+# volumes mount the layer filesystem directly.
+FROM scratch
+
+# Files land at the image root; the JellyfinPlugin CR sets no subPath, so the
+# operator copies `<image>/. -> <plugins>/Distributed Transcoding_0.0.1.0/`.
+COPY plugin/ /
+
+# Self-description labels (JellyOps spec §5.2). The operator currently reads
+# identity from the CR's spec.meta, but these let the meta.json/label fallback
+# resolve the plugin when spec.meta is omitted, and document the payload.
+LABEL io.jellyops.plugin.guid="b9f8c1a2-3d4e-4f5a-9b6c-7d8e9f0a1b2c" \
+      io.jellyops.plugin.name="Distributed Transcoding" \
+      io.jellyops.plugin.version="0.0.1.0" \
+      io.jellyops.plugin.targetAbi="12.0.0.0"

@@ -1,0 +1,29 @@
+# OPTIONAL (spec §11). Confine the plugin's gRPC mesh port (:9090) on the Jellyfin
+# pod to the worker pods only, while leaving the HTTP API/HLS port (:8096) open.
+# Requires a CNI that enforces NetworkPolicy. Delete this file if not wanted.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jellyfin-grpc-workers-only
+  namespace: media
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: jellyfin
+      app.kubernetes.io/instance: home-media
+  policyTypes:
+    - Ingress
+  ingress:
+    # HTTP API + HLS: reachable by ingress controllers / clients.
+    - ports:
+        - protocol: TCP
+          port: 8096
+    # gRPC mesh: only the Distributed Transcoding worker pods may dial :9090.
+    - from:
+        - podSelector:
+            matchLabels:
+              jellyfin.jellyops.io/plugin: jellycode-distributed-transcoding
+              jellyfin.jellyops.io/workload: worker
+      ports:
+        - protocol: TCP
+          port: 9090

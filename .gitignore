@@ -1,0 +1,17 @@
+# .NET build output
+bin/
+obj/
+
+# Local OMC / agent session state
+.omc/
+
+# IDE / user files
+*.user
+*.suo
+.vs/
+.idea/
+.vscode/
+
+# OS cruft
+.DS_Store
+Thumbs.db

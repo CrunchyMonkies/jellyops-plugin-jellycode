@@ -1,0 +1,21 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/Contracts/">
+    <Project Path="src/Contracts/Jellyfin.Plugin.DistributedTranscoding.Contracts.csproj" />
+  </Folder>
+  <Folder Name="/src/Plugin/">
+    <Project Path="src/Plugin/Jellyfin.Plugin.DistributedTranscoding.csproj" />
+  </Folder>
+  <Folder Name="/src/Worker/">
+    <Project Path="src/Worker/Jellyfin.Plugin.DistributedTranscoding.Worker.csproj" />
+  </Folder>
+  <Project Path="../jellyfin-src/Emby.Naming/Emby.Naming.csproj" />
+  <Project Path="../jellyfin-src/Jellyfin.Data/Jellyfin.Data.csproj" />
+  <Project Path="../jellyfin-src/MediaBrowser.Common/MediaBrowser.Common.csproj" />
+  <Project Path="../jellyfin-src/MediaBrowser.Controller/MediaBrowser.Controller.csproj" />
+  <Project Path="../jellyfin-src/MediaBrowser.Model/MediaBrowser.Model.csproj" />
+  <Project Path="../jellyfin-src/src/Jellyfin.CodeAnalysis/Jellyfin.CodeAnalysis.csproj" />
+  <Project Path="../jellyfin-src/src/Jellyfin.Database/Jellyfin.Database.Implementations/Jellyfin.Database.Implementations.csproj" />
+  <Project Path="../jellyfin-src/src/Jellyfin.Extensions/Jellyfin.Extensions.csproj" />
+  <Project Path="../jellyfin-src/src/Jellyfin.MediaEncoding.Keyframes/Jellyfin.MediaEncoding.Keyframes.csproj" />
+</Solution>

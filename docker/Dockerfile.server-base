@@ -1,0 +1,24 @@
+# Plugin-free Jellyfin v12 server (built from ../jellyfin-src), for delivery via JellyOps.
+#
+# Unlike docker/Dockerfile.server, the Distributed Transcoding plugin is NOT baked in
+# here — JellyOps injects it as an image volume from jellyfin-distributed-plugin. Point
+# the Jellyfin CR `spec.image` at this image; the operator parses the `:12.0.0` tag to
+# satisfy the plugin's targetAbi (12.0.0.0), so keep a v12 version tag on it.
+#
+# Headless (no web client); drive via the HTTP API. Once the plugin is injected it hosts
+# the gRPC mesh listener on :9090, which worker pods dial.
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY server/ /jellyfin/
+COPY server-entrypoint.sh /server-entrypoint.sh
+RUN chmod +x /server-entrypoint.sh
+
+ENV JELLYFIN_DATA_DIR=/config
+# 8096 = Jellyfin HTTP API, 9090 = plugin gRPC mesh listener (present once injected).
+EXPOSE 8096 9090
+
+ENTRYPOINT ["/server-entrypoint.sh"]

@@ -1,0 +1,64 @@
+# The Distributed Transcoding plugin, delivered by JellyOps to the home-media instance.
+#
+# - pluginImage: the plugin-only image-volume payload (meta.json + DLLs at root).
+#   injection: imageVolumeCopy — staged into a writable /config/plugins dir so Jellyfin
+#   can write meta.json status at runtime.
+# - services: a ClusterIP Service that targets the Jellyfin pod (selector: instance),
+#   exposing the plugin's in-pod gRPC mesh listener on :9090. Workers dial this.
+# - workloads: the ffmpeg worker pool. The worker image entrypoint is driven by DT_*
+#   env vars. The operator AUTO-MOUNTS the bound Jellyfin instance's media into the
+#   worker (read-only, at the same paths) — no need to re-declare it here (§8.2).
+#
+# Image references are pinned by digest — replace the placeholders with the @sha256
+# values printed by docker/build-push.sh.
+apiVersion: jellyfin.jellyops.io/v1alpha1
+kind: JellyfinPlugin
+metadata:
+  name: jellycode-distributed-transcoding
+  namespace: media
+  labels:
+    jellyfin.jellyops.io/instance: home-media
+spec:
+  jellyfinRef:
+    name: home-media
+  pluginImage:
+    reference: harbor.bne1.ouchi.com.au/applications/jellyfin-distributed-plugin@sha256:08e00cfab506602110d3d74f99085c4b782f116545b5aae335106f9ae4ef7df5
+    pullPolicy: IfNotPresent
+  meta:
+    guid: b9f8c1a2-3d4e-4f5a-9b6c-7d8e9f0a1b2c
+    name: "Distributed Transcoding"
+    version: "0.0.1.0"
+    targetAbi: "12.0.0.0"
+  injection: imageVolumeCopy
+  services:
+    - name: jellycode-grpc
+      selector: instance # -> the Jellyfin pod, where the plugin hosts gRPC on :9090
+      ports:
+        - name: grpc
+          port: 9090
+          targetPort: 9090
+  workloads:
+    - name: worker
+      image:
+        reference: harbor.bne1.ouchi.com.au/applications/jellyfin-distributed-worker@sha256:63376c1501af55b5e0704063334f1e1ae8b16e0788392cd524d7efd7f7d9c686
+      replicas: 3
+      env:
+        # The worker image entrypoint reads these (DT_WORKER_ID defaults to the pod hostname).
+        - name: DT_SERVER
+          value: "http://jellycode-grpc.media.svc:9090"
+        - name: DT_FFMPEG
+          value: "/usr/bin/ffmpeg"
+        - name: DT_MAX_CONCURRENT
+          value: "2"
+        - name: DT_SCRATCH
+          value: "/tmp/worker"
+      # Media is auto-mounted by the operator from the bound Jellyfin instance's
+      # spec.storage.media (read-only, same paths). Only the local scratch dir is
+      # declared here.
+      volumeMounts:
+        - name: scratch
+          mountPath: /tmp/worker
+      volumes:
+        - name: scratch
+          emptyDir: {}
+      terminationGracePeriodSeconds: 120 # allow in-flight transcodes to drain on SIGTERM

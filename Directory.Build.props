@@ -1,0 +1,27 @@
+<Project>
+
+  <!--
+    Root build props for the Distributed Transcoding plugin solution.
+
+    This file exists so MSBuild's upward search for Directory.Build.props stops HERE and never
+    reaches the jellyfin-src tree's props (StyleCop, BannedSymbols, TreatWarningsAsErrors,
+    Jellyfin.CodeAnalysis). Those rules would reject generated gRPC code. A ProjectReference into
+    jellyfin-src does NOT import that project's props, so our projects stay clean.
+
+    Central Package Management is explicitly disabled so we can pin Grpc.* versions inline without
+    touching jellyfin-src/Directory.Packages.props (a forbidden core change).
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <EnableNETAnalyzers>false</EnableNETAnalyzers>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+  </PropertyGroup>
+
+</Project>

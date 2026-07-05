@@ -1,0 +1,20 @@
+# Standalone distributed-transcoding worker pod. Dials a Jellyfin server running the plugin's gRPC
+# mesh listener, runs ffmpeg, and streams segments back. This is the horizontally-scaled artifact.
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY worker/ /worker/
+COPY worker-entrypoint.sh /worker-entrypoint.sh
+RUN chmod +x /worker-entrypoint.sh
+
+# Configurable via env (overridable per Deployment).
+ENV DT_SERVER=http://jellyfin:9090 \
+    DT_WORKER_ID= \
+    DT_FFMPEG=/usr/bin/ffmpeg \
+    DT_MAX_CONCURRENT=2 \
+    DT_SCRATCH=/tmp/worker
+
+ENTRYPOINT ["/worker-entrypoint.sh"]

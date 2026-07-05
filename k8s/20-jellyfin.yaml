@@ -1,0 +1,38 @@
+# The Jellyfin instance. JellyOps builds its Deployment/Service and injects the
+# Distributed Transcoding plugin (see 30-jellyfinplugin.yaml) as an image volume.
+#
+# spec.image MUST be a plugin-free Jellyfin v12 image whose tag encodes the version:
+# the operator parses the tag (12.0.0) to satisfy the plugin's targetAbi (12.0.0.0).
+# Stock jellyfin/jellyfin:latest is 10.x and would fail the ABI gate.
+apiVersion: jellyfin.jellyops.io/v1alpha1
+kind: Jellyfin
+metadata:
+  name: home-media
+  namespace: media
+spec:
+  image: harbor.bne1.ouchi.com.au/applications/jellyfin-server:12.0.0
+  replicas: 1
+  storage:
+    config:
+      size: 10Gi
+      # storageClassName: <your-rwo-storageclass>   # RWO; Jellyfin /config (single writer)
+    media:
+      # Mounted at /media — the worker mounts the SAME claim at the SAME path (§8.2).
+      - name: library
+        existingClaim: media-library
+        mountPath: /media
+        readOnly: true
+        library:
+          name: Media
+  # API bootstrap lets the operator run the first-run wizard and register the library
+  # above. Optional — drop this block if you configure Jellyfin by hand.
+  api:
+    mode: bootstrap
+    generatedSecretName: home-media-api
+    manageLibraries: true
+    refreshLibraryOnChange: true
+  service:
+    type: ClusterIP
+  pluginSelector:
+    matchLabels:
+      jellyfin.jellyops.io/instance: home-media

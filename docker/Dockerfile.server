@@ -1,0 +1,20 @@
+# Jellyfin v12 (built from ../jellyfin-src) + the Distributed Transcoding plugin. No embedded worker —
+# workers run as separate pods/containers and dial this server's gRPC mesh listener on :9090.
+# Headless (no web client); drive via the HTTP API.
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY server/ /jellyfin/
+# JSON-array form required: destination contains a space.
+COPY ["plugin/", "/config/plugins/Distributed Transcoding_0.0.1.0/"]
+COPY server-entrypoint.sh /server-entrypoint.sh
+RUN chmod +x /server-entrypoint.sh
+
+ENV JELLYFIN_DATA_DIR=/config
+# 8096 = Jellyfin HTTP API, 9090 = plugin gRPC mesh listener (workers dial this).
+EXPOSE 8096 9090
+
+ENTRYPOINT ["/server-entrypoint.sh"]

@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Jellyfin.Plugin.DistributedTranscoding</RootNamespace>
+    <AssemblyName>Jellyfin.Plugin.DistributedTranscoding</AssemblyName>
+    <!-- Plugins are loaded into their own AssemblyLoadContext: third-party package DLLs the host does
+         not provide (Grpc.*, Google.Protobuf) must be physically copied next to the plugin. -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <!--
+    gRPC server hosting. Grpc.AspNetCore brings the ASP.NET Core gRPC server bits; a FrameworkReference
+    to Microsoft.AspNetCore.App lets the plugin self-host a second Kestrel listener on its own port.
+  -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Grpc.AspNetCore" Version="2.71.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Contracts/Jellyfin.Plugin.DistributedTranscoding.Contracts.csproj" />
+  </ItemGroup>
+
+  <!--
+    Compile against the EXACT Jellyfin assemblies the running server loads, but do NOT ship copies
+    (Private=false + ExcludeAssets=runtime). Shipping duplicate MediaBrowser.* DLLs causes
+    type-identity conflicts when the host loads the plugin.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="../../../jellyfin-src/MediaBrowser.Controller/MediaBrowser.Controller.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+    <ProjectReference Include="../../../jellyfin-src/MediaBrowser.Common/MediaBrowser.Common.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+    <ProjectReference Include="../../../jellyfin-src/MediaBrowser.Model/MediaBrowser.Model.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="meta.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!--
+    The host already loads all Jellyfin/Emby/MediaBrowser assemblies. CopyLocalLockFileAssemblies
+    and transitive project outputs drag copies into our output; shipping them risks duplicate type
+    identity in the plugin's load context. Strip them, keeping only our own assemblies and the
+    third-party deps the host does NOT provide (Grpc.*, Google.Protobuf).
+  -->
+  <Target Name="StripHostAssemblies" AfterTargets="Build;Publish">
+    <ItemGroup>
+      <_HostAssemblies Include="$(OutDir)Emby.*;$(OutDir)Jellyfin.*;$(OutDir)MediaBrowser.*"
+                       Exclude="$(OutDir)Jellyfin.Plugin.DistributedTranscoding*" />
+    </ItemGroup>
+    <Delete Files="@(_HostAssemblies)" />
+  </Target>
+
+</Project>

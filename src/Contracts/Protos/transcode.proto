@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+option csharp_namespace = "Jellyfin.Plugin.DistributedTranscoding.Contracts";
+
+package distributedtranscoding;
+
+// The transcode mesh. Each worker opens ONE long-lived bidirectional stream to the server and keeps
+// it open. Worker->server frames (WorkerFrame) and server->worker frames (ServerFrame) are
+// multiplexed over the single stream; every job-level frame carries a job_id.
+service TranscodeMesh {
+  rpc Connect(stream WorkerFrame) returns (stream ServerFrame);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Worker -> Server
+// ---------------------------------------------------------------------------------------------
+message WorkerFrame {
+  oneof msg {
+    Register    register  = 1; // worker-level: capabilities + capacity (must be the first frame)
+    Heartbeat   heartbeat = 2; // worker-level: load / free slots (availability)
+    JobAccepted accepted  = 3; // job-level: ack of an AssignJob
+    SegmentData segment   = 4; // job-level: bytes of a finished/partial output file
+    Progress    progress  = 5; // job-level: position, fps, %, bytes, bitrate
+    JobExited   exited    = 6; // job-level: ffmpeg exit code
+    LogLine     log       = 7; // job-level: ffmpeg stderr (for the server-side log file)
+  }
+}
+
+message Register {
+  string worker_id = 1;
+  int32  max_concurrent = 2;     // multi-stream-per-pod capacity
+  repeated string hwaccels = 3;  // vaapi, qsv, cuda, videotoolbox...
+  repeated string encoders = 4;  // h264_nvenc, hevc_qsv, libx264...
+  string ffmpeg_version = 5;
+}
+
+message Heartbeat {
+  int32  active_jobs = 1;
+  int32  free_slots = 2;
+  double cpu = 3;
+}
+
+message JobAccepted {
+  string job_id = 1;
+  bool   accepted = 2;
+  string reason = 3; // populated when accepted == false
+}
+
+message SegmentData {
+  string job_id = 1;
+  string rel_path = 2; // path relative to AssignJob.output_dir -> server reconstructs the canonical path
+  bytes  chunk = 3;
+  bool   eof = 4;      // file complete; server only ever exposes complete files
+}
+
+message Progress {
+  string job_id = 1;
+  double position_ticks = 2;
+  float  framerate = 3;
+  double percent_complete = 4;
+  int64  bytes_transcoded = 5;
+  int32  bitrate = 6;
+}
+
+message JobExited {
+  string job_id = 1;
+  int32  exit_code = 2;
+}
+
+message LogLine {
+  string job_id = 1;
+  string line = 2;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Server -> Worker
+// ---------------------------------------------------------------------------------------------
+message ServerFrame {
+  oneof msg {
+    AssignJob  assign  = 1; // ship encoder path + arg string + path map + job_id
+    JobControl control = 2; // PAUSE | RESUME | STOP | PING
+    Drain      drain   = 3; // stop accepting new jobs (graceful pod shutdown)
+  }
+}
+
+enum JobType {
+  JOB_TYPE_PROGRESSIVE = 0;
+  JOB_TYPE_HLS = 1;
+  JOB_TYPE_DASH = 2;
+}
+
+message PathMap {
+  // Phase 0: identity (server and worker share path strings). Later phases populate these to
+  // translate the server's canonical paths to pod-local paths.
+  string input_from = 1;
+  string input_to = 2;
+}
+
+message AssignJob {
+  string job_id = 1;
+  string encoder_path = 2;          // ffmpeg binary path on the worker
+  string arguments = 3;             // EncodingHelper output (paths already absolute / identity-mapped)
+  JobType type = 4;
+  PathMap path_map = 5;
+  string output_dir = 6;            // canonical server output dir; rel_path is relative to this
+  repeated string output_globs = 7; // which files to tail & stream back (e.g. *.ts, *.mp4, *.m3u8)
+}
+
+message JobControl {
+  enum Action {
+    PING = 0;
+    PAUSE = 1;
+    RESUME = 2;
+    STOP = 3;
+  }
+  string job_id = 1;
+  Action action = 2;
+}
+
+message Drain {
+  string reason = 1;
+}

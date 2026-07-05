@@ -1,0 +1,13 @@
+{
+  "guid": "b9f8c1a2-3d4e-4f5a-9b6c-7d8e9f0a1b2c",
+  "name": "Distributed Transcoding",
+  "description": "Offloads ffmpeg transcoding to a pool of remote worker pods over gRPC.",
+  "overview": "Replaces in-process ffmpeg with a mesh of remote transcoding workers; segments are streamed back over gRPC and written to the canonical transcode paths the HTTP layer already serves.",
+  "owner": "jellycode",
+  "category": "General",
+  "version": "0.0.1.0",
+  "targetAbi": "12.0.0.0",
+  "framework": "net10.0",
+  "status": "Active",
+  "autoUpdate": false
+}

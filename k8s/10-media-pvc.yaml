@@ -1,0 +1,20 @@
+# Shared media library, mounted by BOTH the Jellyfin pod and the worker pods at the
+# SAME path (/media). Phase 0 uses identity path mapping (§8.2): the worker reads the
+# source file locally at the exact path the server passed to ffmpeg, and only streams
+# the *output* segments back over gRPC. So this claim MUST be ReadWriteMany (or
+# ReadOnlyMany if your media is pre-populated and never written) so multiple pods mount it.
+#
+# Replace storageClassName with an RWX-capable class in your cluster (NFS, CephFS,
+# Longhorn RWX, etc.). Point it at your existing media, or pre-load it before playback.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: media-library
+  namespace: media
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: REPLACE_ME_RWX_STORAGECLASS
+  resources:
+    requests:
+      storage: 100Gi
