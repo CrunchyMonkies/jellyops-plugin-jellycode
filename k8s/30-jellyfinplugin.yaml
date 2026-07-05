@@ -42,6 +42,15 @@ spec:
       image:
         reference: harbor.bne1.ouchi.com.au/applications/jellyfin-distributed-worker@sha256:63376c1501af55b5e0704063334f1e1ae8b16e0788392cd524d7efd7f7d9c686
       replicas: 3
+      # Bound the worker (DT_MAX_CONCURRENT concurrent transcodes). Bump limits for
+      # higher concurrency or add GPU resources (e.g. gpu.intel.com/xe) for HW transcode.
+      resources:
+        requests:
+          cpu: "500m"
+          memory: 256Mi
+        limits:
+          cpu: "4"
+          memory: 1Gi
       env:
         # The worker image entrypoint reads these (DT_WORKER_ID defaults to the pod hostname).
         - name: DT_SERVER
