@@ -8,9 +8,11 @@
 # the Xe render node, so we complete the VAAPI device setup ourselves.
 #
 # If the args request a VAAPI encoder and no hw device is already configured, prepend
-# `-init_hw_device vaapi=va:<render node> -filter_hw_device va`; otherwise pass through
-# unchanged (software jobs and already-complete commands are untouched). `exec` preserves the
-# PID so the worker's stop/kill signalling still targets ffmpeg directly.
+# `-init_hw_device vaapi=va:<render node> -filter_hw_device va` plus `-hwaccel vaapi` so the
+# decode also runs on the GPU (it falls back to software for codecs the GPU can't decode, e.g.
+# MPEG-4/Xvid — verified non-fatal). Otherwise pass through unchanged (software jobs and
+# already-complete commands are untouched). `exec` preserves the PID so the worker's stop/kill
+# signalling still targets ffmpeg directly.
 set -eu
 
 FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg
@@ -25,7 +27,7 @@ case "$args" in
       *)
         DEV=$(ls /dev/dri/renderD* 2>/dev/null | head -n1)
         if [ -n "$DEV" ]; then
-          exec "$FFMPEG" -init_hw_device "vaapi=va:$DEV" -filter_hw_device va "$@"
+          exec "$FFMPEG" -init_hw_device "vaapi=va:$DEV" -hwaccel vaapi -hwaccel_device va -filter_hw_device va "$@"
         fi ;;
     esac ;;
 esac

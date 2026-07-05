@@ -203,9 +203,10 @@ env:
   - {name: DT_FFMPEG, value: /usr/local/bin/ffmpeg-vaapi-wrap}
 ```
 
-Then set Jellyfin → Playback → **VAAPI**, device `/dev/dri/renderD128`. HW **encode** (`h264_vaapi`/`hevc_vaapi`)
-runs on the GPU; decode stays on CPU unless the server also has the device. Note: **QSV/oneVPL fails on current
-Xe/Battlemage cards** (`-17` child-device error) — use VAAPI.
+Then set Jellyfin → Playback → **VAAPI**, device `/dev/dri/renderD128`. The wrapper runs both **decode and
+encode** on the GPU (it adds `-hwaccel vaapi`, with automatic software fallback for codecs the card can't
+decode, e.g. Xvid); only scaling stays on CPU (~1.4 cores per 1080p stream vs ~4.3 fully-software). Note:
+**QSV/oneVPL fails on current Xe/Battlemage cards** (`-17` child-device error) — use VAAPI.
 
 ### NVIDIA (NVENC) — Kubernetes
 
