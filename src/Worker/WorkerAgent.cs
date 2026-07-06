@@ -49,13 +49,14 @@ public sealed class WorkerAgent
         _workerClass = Environment.GetEnvironmentVariable("DT_CLASS")?.Trim().ToLowerInvariant() ?? "cpu";
         if (string.Equals(_workerClass, "hw", StringComparison.Ordinal))
         {
-            var extra = Environment.GetEnvironmentVariable("DT_HWACCELS");
-            _hwAccels = string.IsNullOrWhiteSpace(extra)
+            // DT_HWACCELS is authoritative when set (e.g. "vaapi" for Intel, "nvenc" for NVIDIA).
+            // A bare hw worker with no DT_HWACCELS defaults to vaapi for backward compatibility.
+            var accels = Environment.GetEnvironmentVariable("DT_HWACCELS");
+            _hwAccels = string.IsNullOrWhiteSpace(accels)
                 ? new[] { "vaapi" }
-                : extra.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                       .Append("vaapi")
-                       .Distinct(StringComparer.OrdinalIgnoreCase)
-                       .ToArray();
+                : accels.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
         }
         else
         {
@@ -177,12 +178,13 @@ public sealed class WorkerAgent
             return;
         }
 
-        // Reject if the job requires vaapi but this worker is not hw-capable.
-        if (RequiresVaapi(assign.Arguments) && !Array.Exists(_hwAccels, h => string.Equals(h, "vaapi", StringComparison.OrdinalIgnoreCase)))
+        // Reject if the job requires a hardware encoder this worker does not advertise.
+        var missing = MissingAccelerator(assign.Arguments);
+        if (missing is not null)
         {
             _outbound.Writer.TryWrite(new WorkerFrame
             {
-                Accepted = new JobAccepted { JobId = assign.JobId, Accepted = false, Reason = "no vaapi" }
+                Accepted = new JobAccepted { JobId = assign.JobId, Accepted = false, Reason = $"no {missing}" }
             });
             return;
         }
@@ -278,11 +280,31 @@ public sealed class WorkerAgent
         }
     }
 
+    private static readonly Regex VaapiEncoderRegex = new(@"\b\w+_vaapi\b", RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
+    private static readonly Regex NvencEncoderRegex = new(@"\b\w+_nvenc\b", RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
+
     /// <summary>
-    /// Returns true if the ffmpeg argument string contains a vaapi encoder (e.g. h264_vaapi, hevc_vaapi).
+    /// Returns the name of a hardware accelerator the ffmpeg arguments require but this worker does not
+    /// advertise (e.g. "vaapi" for h264_vaapi/hevc_vaapi, "nvenc" for h264_nvenc/hevc_nvenc), or null
+    /// when the worker can run the job.
     /// </summary>
-    private static bool RequiresVaapi(string arguments)
-        => Regex.IsMatch(arguments, @"\b\w+_vaapi\b", RegexOptions.None, TimeSpan.FromMilliseconds(100));
+    private string? MissingAccelerator(string arguments)
+    {
+        if (VaapiEncoderRegex.IsMatch(arguments) && !HasAccel("vaapi"))
+        {
+            return "vaapi";
+        }
+
+        if (NvencEncoderRegex.IsMatch(arguments) && !HasAccel("nvenc"))
+        {
+            return "nvenc";
+        }
+
+        return null;
+    }
+
+    private bool HasAccel(string name)
+        => Array.Exists(_hwAccels, h => string.Equals(h, name, StringComparison.OrdinalIgnoreCase));
 
     private static async Task Safe(Task task)
     {

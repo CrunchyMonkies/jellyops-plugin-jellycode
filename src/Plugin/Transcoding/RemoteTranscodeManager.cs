@@ -380,6 +380,19 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
         return _encodingHelper.GetHlsVideoCommandLine(state, opts, outputPath, 0, true);
     }
 
+    /// <summary>
+    /// Builds an NVIDIA NVENC HLS command line by deep-cloning the server's encoding options and
+    /// switching the hardware acceleration type to nvenc. Used to route a job the server emitted for
+    /// the (Intel) vaapi pool onto a CUDA/NVENC worker instead.
+    /// </summary>
+    private string BuildNvencCommandLine(StreamState state, string outputPath)
+    {
+        var opts = CloneEncodingOptions(_serverConfigurationManager.GetEncodingOptions());
+        opts.HardwareAccelerationType = HardwareAccelerationType.nvenc;
+        opts.EnableHardwareEncoding = true;
+        return _encodingHelper.GetHlsVideoCommandLine(state, opts, outputPath, 0, true);
+    }
+
     private static EncodingOptions CloneEncodingOptions(EncodingOptions source)
     {
         var json = JsonSerializer.SerializeToUtf8Bytes(source);
@@ -445,8 +458,11 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
         var jobClass = ClassifyJob(state, commandLineArguments);
         var excluded = new HashSet<string>(StringComparer.Ordinal);
         var timeout = TimeSpan.FromSeconds(Config.FirstSegmentTimeoutSeconds);
-        const int MaxAttempts = 4;
-        var fallingBack = false;
+        const int MaxAttempts = 6;
+        var fallingBack = false;    // agnostic jobs: switched from cpu-preferred to any-worker
+        int hwTier = 0;             // hardware jobs: 0 = vaapi (Intel), 1 = nvenc (NVIDIA), 2 = software (libx264)
+        const int SoftwareTier = 2;
+        string? nvencArgs = null;
         string? softwareArgs = null;
 
         TranscodingJob? transcodingJob = null;
@@ -457,22 +473,37 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
             Func<WorkerConnection, bool> predicate;
             string currentArgs;
 
-            if (jobClass == JobClass.Hardware && !fallingBack)
+            if (jobClass == JobClass.Hardware)
             {
-                predicate = w => w.CanVaapi;
-                currentArgs = commandLineArguments;
+                switch (hwTier)
+                {
+                    case 0: // vaapi (Intel) — the command line the server already emitted
+                        predicate = w => w.CanVaapi;
+                        currentArgs = commandLineArguments;
+                        break;
+                    case 1: // nvenc (NVIDIA) — regenerate the command for CUDA/NVENC
+                        nvencArgs ??= BuildNvencCommandLine(state, outputPath);
+                        predicate = w => w.CanNvenc;
+                        currentArgs = nvencArgs;
+                        break;
+                    default: // software (libx264) on a non-GPU worker
+                        softwareArgs ??= BuildSoftwareCommandLine(state, outputPath);
+                        predicate = w => !w.CanVaapi && !w.CanNvenc;
+                        currentArgs = softwareArgs;
+                        break;
+                }
             }
-            else if (jobClass == JobClass.Hardware && fallingBack)
+            else if (fallingBack)
             {
-                softwareArgs ??= BuildSoftwareCommandLine(state, outputPath);
-                predicate = w => !w.CanVaapi;
-                currentArgs = softwareArgs;
+                // Agnostic, no cpu-only worker was free — accept any worker.
+                currentArgs = commandLineArguments;
+                predicate = _ => true;
             }
             else
             {
-                // Agnostic: prefer CPU workers to keep the GPU free, but accept any.
+                // Agnostic (copy/audio): prefer non-GPU workers to keep the GPUs free.
                 currentArgs = commandLineArguments;
-                predicate = w => !w.CanVaapi;
+                predicate = w => !w.CanVaapi && !w.CanNvenc;
             }
 
             // Pick a worker matching the predicate.
@@ -483,6 +514,18 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
             }
             catch (TimeoutException)
             {
+                if (jobClass == JobClass.Hardware && hwTier < SoftwareTier)
+                {
+                    // No worker for this hw tier — step down: vaapi -> nvenc -> software.
+                    _logger.LogInformation(
+                        "No {Tried} worker available; trying {Next}",
+                        hwTier == 0 ? "vaapi" : "nvenc",
+                        hwTier == 0 ? "nvenc" : "software");
+                    hwTier++;
+                    excluded.Clear();
+                    continue;
+                }
+
                 if (jobClass == JobClass.Agnostic && !fallingBack)
                 {
                     // No CPU-only worker available — try any worker.
@@ -496,13 +539,6 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
                         OnTranscodeFailedToStart(outputPath, transcodingJobType, state);
                         throw new FfmpegException("No transcoding worker available.", ex);
                     }
-                }
-                else if (jobClass == JobClass.Hardware && !fallingBack)
-                {
-                    // No hw worker available — fall back to software on a CPU worker.
-                    _logger.LogInformation("No vaapi worker available; falling back to software encode");
-                    fallingBack = true;
-                    continue;
                 }
                 else
                 {
@@ -589,12 +625,15 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
             logStream.Dispose();
             excluded.Add(worker.WorkerId);
 
-            // If the reject implies a capability gap and we haven't fallen back yet, switch.
-            if (jobClass == JobClass.Hardware && !fallingBack)
+            // A reject usually means a capability gap — step down the hw tier (vaapi -> nvenc -> software).
+            if (jobClass == JobClass.Hardware && hwTier < SoftwareTier)
             {
-                _logger.LogInformation("Switching to software fallback for job after vaapi rejection");
-                fallingBack = true;
-                excluded.Clear(); // CPU workers haven't been tried yet.
+                _logger.LogInformation(
+                    "Worker rejected {Tier} job; stepping down to {Next}",
+                    hwTier == 0 ? "vaapi" : "nvenc",
+                    hwTier == 0 ? "nvenc" : "software");
+                hwTier++;
+                excluded.Clear(); // the next tier's workers haven't been tried yet
             }
 
             if (attempt >= MaxAttempts)

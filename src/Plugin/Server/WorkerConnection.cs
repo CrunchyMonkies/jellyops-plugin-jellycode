@@ -43,6 +43,11 @@ public sealed class WorkerConnection
     /// </summary>
     public bool CanVaapi => HwAccels.Any(h => string.Equals(h, "vaapi", StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>
+    /// Convenience: true when the worker advertises nvenc (NVIDIA) capability.
+    /// </summary>
+    public bool CanNvenc => HwAccels.Any(h => string.Equals(h, "nvenc", StringComparison.OrdinalIgnoreCase));
+
     public ChannelReader<ServerFrame> Outbound => _outbound.Reader;
 
     public bool TrySend(ServerFrame frame) => _outbound.Writer.TryWrite(frame);
