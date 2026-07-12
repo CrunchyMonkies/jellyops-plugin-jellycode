@@ -24,8 +24,10 @@ public sealed class WorkerAgent
     private readonly string _ffmpegPath;
     private readonly string _scratchRoot;
     private readonly int _maxConcurrent;
-    private readonly string _workerClass;
     private readonly string[] _hwAccels;
+    private readonly string[] _encoders;
+    private readonly string[] _decoders;
+    private readonly string _ffmpegVersion;
 
     private readonly ConcurrentDictionary<string, FfmpegJob> _jobs = new(StringComparer.Ordinal);
 
@@ -46,22 +48,36 @@ public sealed class WorkerAgent
         _scratchRoot = scratchRoot;
         _maxConcurrent = Math.Max(1, maxConcurrent);
 
-        _workerClass = Environment.GetEnvironmentVariable("DT_CLASS")?.Trim().ToLowerInvariant() ?? "cpu";
-        if (string.Equals(_workerClass, "hw", StringComparison.Ordinal))
+        // The worker's actual hardware accelerators are declared by env, not inferred from ffmpeg's
+        // encoder list (ffmpeg advertises every compiled-in encoder regardless of whether the hardware
+        // is present). DT_HWACCELS is authoritative; DT_CLASS=hw with no list defaults to vaapi (Intel);
+        // anything else is a software/cpu worker.
+        var accelsEnv = Environment.GetEnvironmentVariable("DT_HWACCELS");
+        var classEnv = Environment.GetEnvironmentVariable("DT_CLASS")?.Trim().ToLowerInvariant() ?? "cpu";
+        if (!string.IsNullOrWhiteSpace(accelsEnv))
         {
-            // DT_HWACCELS is authoritative when set (e.g. "vaapi" for Intel, "nvenc" for NVIDIA).
-            // A bare hw worker with no DT_HWACCELS defaults to vaapi for backward compatibility.
-            var accels = Environment.GetEnvironmentVariable("DT_HWACCELS");
-            _hwAccels = string.IsNullOrWhiteSpace(accels)
-                ? new[] { "vaapi" }
-                : accels.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .ToArray();
+            _hwAccels = accelsEnv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                                 .Distinct(StringComparer.OrdinalIgnoreCase)
+                                 .ToArray();
+        }
+        else if (string.Equals(classEnv, "hw", StringComparison.Ordinal))
+        {
+            _hwAccels = new[] { "vaapi" };
         }
         else
         {
             _hwAccels = Array.Empty<string>();
         }
+
+        // Probe ffmpeg for the supported encoders / version, then keep only the encoders this worker
+        // can actually use (software always; hardware encoders only for its advertised accelerators).
+        // This is what drives the per-type codec options in the plugin settings UI.
+        var caps = FfmpegCapabilities.Probe(_ffmpegPath);
+        _encoders = FfmpegCapabilities.FilterForAccels(caps.Encoders, _hwAccels).ToArray();
+        _decoders = FfmpegCapabilities.FilterForAccels(caps.Decoders, _hwAccels).ToArray();
+        _ffmpegVersion = caps.Version;
+
+        Console.WriteLine($"[worker] ffmpeg {_ffmpegVersion}; hwaccels=[{string.Join(",", _hwAccels)}]; encoders=[{string.Join(",", _encoders)}]; decoders=[{string.Join(",", _decoders)}]");
     }
 
     public async Task<int> RunAsync(CancellationToken cancellationToken)
@@ -124,9 +140,11 @@ public sealed class WorkerAgent
         {
             WorkerId = _workerId,
             MaxConcurrent = _maxConcurrent,
-            FfmpegVersion = "unknown"
+            FfmpegVersion = _ffmpegVersion
         };
         reg.Hwaccels.AddRange(_hwAccels);
+        reg.Encoders.AddRange(_encoders);
+        reg.Decoders.AddRange(_decoders);
         var register = new WorkerFrame { Register = reg };
         await call.RequestStream.WriteAsync(register, cancellationToken).ConfigureAwait(false);
 

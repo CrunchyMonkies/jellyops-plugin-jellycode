@@ -45,6 +45,11 @@
     <None Include="meta.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <!-- Settings page served by the Jellyfin dashboard (IHasWebPages). -->
+  <ItemGroup>
+    <EmbeddedResource Include="Configuration\configPage.html" />
+  </ItemGroup>
+
   <!--
     The host already loads all Jellyfin/Emby/MediaBrowser assemblies. CopyLocalLockFileAssemblies
     and transitive project outputs drag copies into our output; shipping them risks duplicate type

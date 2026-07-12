@@ -42,7 +42,15 @@ public sealed class TranscodeMeshService : TranscodeMesh.TranscodeMeshBase
 
         var register = requestStream.Current.Register;
         var hwAccels = register.Hwaccels.Count > 0 ? (IReadOnlyList<string>)register.Hwaccels.ToArray() : Array.Empty<string>();
-        var worker = new WorkerConnection(register.WorkerId, Math.Max(1, register.MaxConcurrent), hwAccels);
+        var encoders = register.Encoders.Count > 0 ? (IReadOnlyList<string>)register.Encoders.ToArray() : Array.Empty<string>();
+        var decoders = register.Decoders.Count > 0 ? (IReadOnlyList<string>)register.Decoders.ToArray() : Array.Empty<string>();
+        var worker = new WorkerConnection(
+            register.WorkerId,
+            Math.Max(1, register.MaxConcurrent),
+            hwAccels,
+            encoders,
+            register.FfmpegVersion,
+            decoders);
         _registry.Add(worker);
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(token);
@@ -86,6 +94,7 @@ public sealed class TranscodeMeshService : TranscodeMesh.TranscodeMeshBase
             case WorkerFrame.MsgOneofCase.Heartbeat:
                 worker.ActiveJobs = frame.Heartbeat.ActiveJobs;
                 worker.FreeSlots = frame.Heartbeat.FreeSlots;
+                worker.LastSeenUtc = DateTime.UtcNow;
                 break;
             case WorkerFrame.MsgOneofCase.Accepted:
                 _sink.OnJobAccepted(frame.Accepted.JobId, frame.Accepted.Accepted, frame.Accepted.Reason);

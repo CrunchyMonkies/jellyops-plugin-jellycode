@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Distributed Transcoding</title>
+</head>
+<body>
+<div id="dtConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
+     data-require="emby-input,emby-button,emby-select,emby-checkbox">
+    <div data-role="content">
+        <div class="content-primary">
+            <form id="dtConfigForm">
+                <div class="verticalSection">
+                    <div class="sectionTitleContainer flex align-items-center">
+                        <h2 class="sectionTitle">Distributed Transcoding</h2>
+                    </div>
+
+                    <!-- Tab strip -->
+                    <div class="localnav" style="margin-bottom:1em;">
+                        <div id="dtTabs" style="display:flex;gap:0.25em;flex-wrap:wrap;">
+                            <button type="button" is="emby-button" class="dt-tab raised" data-target="dtTab-workers">Workers</button>
+                            <button type="button" is="emby-button" class="dt-tab raised" data-target="dtTab-types">Worker types</button>
+                            <button type="button" is="emby-button" class="dt-tab raised" data-target="dtTab-routing">Routing</button>
+                            <button type="button" is="emby-button" class="dt-tab raised" data-target="dtTab-mesh">Mesh</button>
+                        </div>
+                    </div>
+
+                    <!-- ===== Tab: Workers ===== -->
+                    <div id="dtTab-workers" class="dt-panel verticalSection">
+                        <h3 class="sectionTitle">Active workers</h3>
+                        <div class="fieldDescription" style="margin-bottom:0.5em;">
+                            Workers connected to the transcode mesh right now. Type, encoders and decoders
+                            are reported by each worker's ffmpeg. <span id="dtWorkersUpdated"></span>
+                        </div>
+                        <div style="overflow-x:auto;">
+                            <table id="dtWorkersTable" style="width:100%;border-collapse:collapse;">
+                                <thead>
+                                    <tr style="text-align:left;">
+                                        <th style="padding:0.35em 0.6em;">Worker</th>
+                                        <th style="padding:0.35em 0.6em;">Type</th>
+                                        <th style="padding:0.35em 0.6em;">HW accel</th>
+                                        <th style="padding:0.35em 0.6em;">Encoders</th>
+                                        <th style="padding:0.35em 0.6em;">Decoders</th>
+                                        <th style="padding:0.35em 0.6em;">ffmpeg</th>
+                                        <th style="padding:0.35em 0.6em;">Slots</th>
+                                        <th style="padding:0.35em 0.6em;">Active</th>
+                                        <th style="padding:0.35em 0.6em;">Last seen</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="dtWorkersBody">
+                                    <tr><td colspan="9" style="padding:0.6em;opacity:0.7;">Loading…</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- ===== Tab: Worker types ===== -->
+                    <div id="dtTab-types" class="dt-panel verticalSection" style="display:none;">
+                        <h3 class="sectionTitle">Transcoding options per worker type</h3>
+                        <div class="fieldDescription" style="margin-bottom:0.5em;">
+                            Options applied to jobs routed to each worker type. Codec/encoder choices are
+                            filtered to what connected workers of that type report; available hardware
+                            decoders are listed for reference.
+                        </div>
+                        <div id="dtTypes"></div>
+                    </div>
+
+                    <!-- ===== Tab: Routing ===== -->
+                    <div id="dtTab-routing" class="dt-panel verticalSection" style="display:none;">
+                        <h3 class="sectionTitle">Priority routing</h3>
+                        <div class="fieldDescription" style="margin-bottom:0.5em;">
+                            Direct jobs to worker types based on the source (decode) and target (encode)
+                            codec. The most specific matching rule wins; the default order applies when no
+                            rule matches. Workers are still capability-checked, so a type that cannot do the
+                            job falls through to the next in the order.
+                        </div>
+
+                        <h4 class="sectionTitle" style="margin-top:0.5em;">Default order</h4>
+                        <div id="dtDefaultPriority" style="margin-bottom:1em;"></div>
+
+                        <h4 class="sectionTitle">Rules</h4>
+                        <div style="overflow-x:auto;">
+                            <table id="dtRoutingTable" style="width:100%;border-collapse:collapse;">
+                                <thead>
+                                    <tr style="text-align:left;">
+                                        <th style="padding:0.35em 0.6em;">Decode codec</th>
+                                        <th style="padding:0.35em 0.6em;">Encode codec</th>
+                                        <th style="padding:0.35em 0.6em;">Worker priority (1st → 3rd)</th>
+                                        <th style="padding:0.35em 0.6em;"></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="dtRoutingBody"></tbody>
+                            </table>
+                        </div>
+                        <button type="button" id="dtAddRule" is="emby-button" class="raised" style="margin-top:0.6em;">
+                            <span>Add rule</span>
+                        </button>
+                    </div>
+
+                    <!-- ===== Tab: Mesh ===== -->
+                    <div id="dtTab-mesh" class="dt-panel verticalSection" style="display:none;">
+                        <h3 class="sectionTitle">Mesh listener</h3>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="dtListenAddress">gRPC listen address</label>
+                            <input id="dtListenAddress" type="text" class="emby-input" />
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="dtGrpcPort">gRPC port</label>
+                            <input id="dtGrpcPort" type="number" min="1" max="65535" class="emby-input" />
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="dtFirstSegmentTimeout">First-segment timeout (seconds)</label>
+                            <input id="dtFirstSegmentTimeout" type="number" min="1" class="emby-input" />
+                        </div>
+                    </div>
+
+                    <button is="emby-button" type="submit" class="raised button-submit block emby-button" style="margin-top:1em;">
+                        <span>Save</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        (function () {
+            var PLUGIN_ID = 'b9f8c1a2-3d4e-4f5a-9b6c-7d8e9f0a1b2c';
+            var TYPES = ['cpu', 'intel', 'nvidia'];
+            var CODECS = ['auto', 'h264', 'hevc', 'av1'];
+            var PRESETS = ['', 'ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'];
+            var QMODES = ['auto', 'crf', 'cq', 'qp', 'global_quality'];
+            var DECODE_CODECS = ['any', 'h264', 'hevc', 'av1', 'vp9', 'vp8', 'mpeg4', 'mpeg2video'];
+            var ENCODE_CODECS = ['any', 'copy', 'h264', 'hevc', 'av1'];
+            var PRIORITY_CHOICES = ['', 'cpu', 'intel', 'nvidia'];
+
+            function el(id, ctx) { return (ctx || document).querySelector(id); }
+            function els(sel, ctx) { return Array.prototype.slice.call((ctx || document).querySelectorAll(sel)); }
+            function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+            function opt(values, selected, includeAuto) {
+                var out = '', list = includeAuto ? ['auto'].concat(values) : values;
+                for (var i = 0; i < list.length; i++) {
+                    var v = list[i], label = v === '' ? '(default)' : v;
+                    out += '<option value="' + esc(v) + '"' + (v === selected ? ' selected' : '') + '>' + esc(label) + '</option>';
+                }
+                return out;
+            }
+
+            // ---------- Tabs ----------
+            function showTab(page, targetId) {
+                els('.dt-panel', page).forEach(function (p) { p.style.display = p.id === targetId ? '' : 'none'; });
+                els('.dt-tab', page).forEach(function (b) { b.classList.toggle('button-submit', b.getAttribute('data-target') === targetId); });
+            }
+
+            // ---------- Worker types tab ----------
+            function typePanel(type, cfg, caps) {
+                var encoders = (caps && caps.Encoders) ? caps.Encoders : [];
+                var decoders = (caps && caps.Decoders) ? caps.Decoders : [];
+                var workerCount = caps ? caps.WorkerCount : 0;
+                var note = workerCount > 0
+                    ? workerCount + ' worker(s) connected'
+                    : 'No active workers of this type — settings are saved and applied when one connects.';
+                var decNote = decoders.length ? 'HW decoders: ' + decoders.join(', ') : 'HW decoders: none reported';
+                var q = 'dt-' + type + '-';
+                return '' +
+                '<fieldset class="verticalSection" style="border:1px solid rgba(127,127,127,0.35);border-radius:6px;padding:0.6em 1em;margin-bottom:0.8em;">' +
+                    '<legend style="text-transform:capitalize;font-weight:600;">' + esc(type) + '</legend>' +
+                    '<label style="display:block;margin:0.3em 0;"><input type="checkbox" id="' + q + 'Enabled"' + (cfg.Enabled ? ' checked' : '') + ' /> Route jobs to this worker type</label>' +
+                    '<div class="inputContainer"><label class="inputLabel" for="' + q + 'VideoCodec">Video codec</label>' +
+                        '<select id="' + q + 'VideoCodec" class="emby-select">' + opt(CODECS, cfg.VideoCodec || 'auto', false) + '</select></div>' +
+                    '<div class="inputContainer"><label class="inputLabel" for="' + q + 'Encoder">Encoder</label>' +
+                        '<select id="' + q + 'Encoder" class="emby-select">' + opt(encoders, cfg.Encoder || 'auto', true) + '</select></div>' +
+                    '<div class="inputContainer"><label class="inputLabel" for="' + q + 'Preset">Preset</label>' +
+                        '<select id="' + q + 'Preset" class="emby-select">' + opt(PRESETS, cfg.Preset || '', false) + '</select></div>' +
+                    '<div class="inputContainer"><label class="inputLabel" for="' + q + 'QualityMode">Quality mode</label>' +
+                        '<select id="' + q + 'QualityMode" class="emby-select">' + opt(QMODES, cfg.QualityMode || 'auto', false) + '</select></div>' +
+                    '<div class="inputContainer"><label class="inputLabel" for="' + q + 'QualityValue">Quality value (CRF/CQ/QP, 0 = default)</label>' +
+                        '<input id="' + q + 'QualityValue" type="number" min="0" max="63" class="emby-input" value="' + (cfg.QualityValue || 0) + '" /></div>' +
+                    '<div class="inputContainer"><label class="inputLabel" for="' + q + 'MaxBitrateKbps">Max bitrate (kbps, 0 = unlimited)</label>' +
+                        '<input id="' + q + 'MaxBitrateKbps" type="number" min="0" class="emby-input" value="' + (cfg.MaxBitrateKbps || 0) + '" /></div>' +
+                    '<div class="inputContainer"><label class="inputLabel" for="' + q + 'MaxConcurrentOverride">Max concurrent per worker (0 = worker default)</label>' +
+                        '<input id="' + q + 'MaxConcurrentOverride" type="number" min="0" class="emby-input" value="' + (cfg.MaxConcurrentOverride || 0) + '" /></div>' +
+                    '<div class="inputContainer"><label class="inputLabel" for="' + q + 'ExtraArgs">Extra ffmpeg args</label>' +
+                        '<input id="' + q + 'ExtraArgs" type="text" class="emby-input" value="' + esc(cfg.ExtraArgs || '') + '" /></div>' +
+                    '<div class="fieldDescription">' + esc(note) + '<br/>' + esc(decNote) + '</div>' +
+                '</fieldset>';
+            }
+
+            function cfgForType(config, type) {
+                var list = config.WorkerTypes || [];
+                for (var i = 0; i < list.length; i++) { if ((list[i].Type || '').toLowerCase() === type) { return list[i]; } }
+                return { Type: type, Enabled: true, VideoCodec: 'auto', Encoder: 'auto', Preset: '', QualityMode: 'auto', QualityValue: 0, MaxBitrateKbps: 0, MaxConcurrentOverride: 0, ExtraArgs: '' };
+            }
+            function capsForType(capsList, type) {
+                for (var i = 0; i < (capsList || []).length; i++) { if ((capsList[i].Type || '').toLowerCase() === type) { return capsList[i]; } }
+                return null;
+            }
+            function renderTypes(page, config, capsList) {
+                var html = '';
+                for (var i = 0; i < TYPES.length; i++) { html += typePanel(TYPES[i], cfgForType(config, TYPES[i]), capsForType(capsList, TYPES[i])); }
+                el('#dtTypes', page).innerHTML = html;
+            }
+            function readTypes(page) {
+                var result = [];
+                for (var i = 0; i < TYPES.length; i++) {
+                    var t = TYPES[i], q = 'dt-' + t + '-';
+                    result.push({
+                        Type: t,
+                        Enabled: el('#' + q + 'Enabled', page).checked,
+                        VideoCodec: el('#' + q + 'VideoCodec', page).value,
+                        Encoder: el('#' + q + 'Encoder', page).value,
+                        Preset: el('#' + q + 'Preset', page).value,
+                        QualityMode: el('#' + q + 'QualityMode', page).value,
+                        QualityValue: parseInt(el('#' + q + 'QualityValue', page).value, 10) || 0,
+                        MaxBitrateKbps: parseInt(el('#' + q + 'MaxBitrateKbps', page).value, 10) || 0,
+                        MaxConcurrentOverride: parseInt(el('#' + q + 'MaxConcurrentOverride', page).value, 10) || 0,
+                        ExtraArgs: el('#' + q + 'ExtraArgs', page).value
+                    });
+                }
+                return result;
+            }
+
+            // ---------- Routing tab ----------
+            // Three ordered selects that together express a priority list (dedup, blanks dropped).
+            function prioritySelects(idPrefix, order) {
+                order = order || [];
+                var out = '<span style="display:inline-flex;gap:0.35em;flex-wrap:wrap;">';
+                for (var i = 0; i < 3; i++) {
+                    out += '<select id="' + idPrefix + i + '" class="emby-select" style="width:auto;min-width:6em;">' +
+                        opt(PRIORITY_CHOICES, order[i] || '', false) + '</select>';
+                }
+                return out + '</span>';
+            }
+            function readPriority(page, idPrefix) {
+                var seen = {}, order = [];
+                for (var i = 0; i < 3; i++) {
+                    var elx = el('#' + idPrefix + i, page);
+                    var v = elx ? elx.value : '';
+                    if (v && !seen[v]) { seen[v] = true; order.push(v); }
+                }
+                return order;
+            }
+
+            var ruleSeq = 0;
+            function ruleRow(rule) {
+                var id = 'dtRule' + (ruleSeq++);
+                rule = rule || { DecodeCodec: 'any', EncodeCodec: 'any', WorkerPriority: [] };
+                return '<tr data-rule="' + id + '" style="border-top:1px solid rgba(127,127,127,0.25);">' +
+                    '<td style="padding:0.35em 0.6em;"><select id="' + id + '-dec" class="emby-select">' + opt(DECODE_CODECS, (rule.DecodeCodec || 'any'), false) + '</select></td>' +
+                    '<td style="padding:0.35em 0.6em;"><select id="' + id + '-enc" class="emby-select">' + opt(ENCODE_CODECS, (rule.EncodeCodec || 'any'), false) + '</select></td>' +
+                    '<td style="padding:0.35em 0.6em;">' + prioritySelects(id + '-p', rule.WorkerPriority || []) + '</td>' +
+                    '<td style="padding:0.35em 0.6em;"><button type="button" is="emby-button" class="dt-del-rule raised" data-rule="' + id + '">Remove</button></td>' +
+                '</tr>';
+            }
+            function renderRouting(page, config) {
+                el('#dtDefaultPriority', page).innerHTML = prioritySelects('dtDefault-p', config.DefaultWorkerPriority || ['intel', 'nvidia', 'cpu']);
+                var rules = config.RoutingRules || [];
+                el('#dtRoutingBody', page).innerHTML = rules.map(ruleRow).join('');
+                wireDeleteButtons(page);
+            }
+            function wireDeleteButtons(page) {
+                els('.dt-del-rule', page).forEach(function (b) {
+                    b.onclick = function () { var r = b.getAttribute('data-rule'); var tr = el('tr[data-rule="' + r + '"]', page); if (tr) { tr.parentNode.removeChild(tr); } };
+                });
+            }
+            function readRouting(page) {
+                var def = readPriority(page, 'dtDefault-p');
+                var rules = [];
+                els('#dtRoutingBody tr', page).forEach(function (tr) {
+                    var id = tr.getAttribute('data-rule');
+                    var pr = readPriority(page, id + '-p');
+                    if (!pr.length) { return; } // a rule with no priority is meaningless
+                    rules.push({
+                        DecodeCodec: el('#' + id + '-dec', page).value,
+                        EncodeCodec: el('#' + id + '-enc', page).value,
+                        WorkerPriority: pr
+                    });
+                });
+                return { DefaultWorkerPriority: def.length ? def : ['intel', 'nvidia', 'cpu'], RoutingRules: rules };
+            }
+
+            // ---------- Workers tab ----------
+            function ago(iso) {
+                if (!iso) { return '—'; }
+                var secs = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+                if (secs < 60) { return secs + 's ago'; }
+                if (secs < 3600) { return Math.round(secs / 60) + 'm ago'; }
+                return Math.round(secs / 3600) + 'h ago';
+            }
+            function renderWorkers(page, workers) {
+                var body = el('#dtWorkersBody', page);
+                if (!workers || !workers.length) {
+                    body.innerHTML = '<tr><td colspan="9" style="padding:0.6em;opacity:0.7;">No workers connected.</td></tr>';
+                } else {
+                    var rows = '';
+                    for (var i = 0; i < workers.length; i++) {
+                        var w = workers[i];
+                        rows += '<tr style="border-top:1px solid rgba(127,127,127,0.2);">' +
+                            '<td style="padding:0.35em 0.6em;">' + esc(w.WorkerId) + '</td>' +
+                            '<td style="padding:0.35em 0.6em;text-transform:capitalize;">' + esc(w.Type) + '</td>' +
+                            '<td style="padding:0.35em 0.6em;">' + esc((w.HwAccels || []).join(', ') || '—') + '</td>' +
+                            '<td style="padding:0.35em 0.6em;">' + esc((w.Encoders || []).join(', ') || '—') + '</td>' +
+                            '<td style="padding:0.35em 0.6em;">' + esc((w.Decoders || []).join(', ') || '—') + '</td>' +
+                            '<td style="padding:0.35em 0.6em;">' + esc(w.FfmpegVersion) + '</td>' +
+                            '<td style="padding:0.35em 0.6em;">' + esc(w.FreeSlots) + '/' + esc(w.MaxConcurrent) + '</td>' +
+                            '<td style="padding:0.35em 0.6em;">' + esc(w.ActiveJobs) + '</td>' +
+                            '<td style="padding:0.35em 0.6em;">' + esc(ago(w.LastSeenUtc)) + '</td>' +
+                        '</tr>';
+                    }
+                    body.innerHTML = rows;
+                }
+                el('#dtWorkersUpdated', page).textContent = 'Updated ' + new Date().toLocaleTimeString();
+            }
+            function fetchWorkers(page) {
+                return ApiClient.fetch({ url: ApiClient.getUrl('DistributedTranscoding/Workers'), dataType: 'json' })
+                    .then(function (w) { renderWorkers(page, w); })
+                    .catch(function () { });
+            }
+
+            // ---------- Load / save ----------
+            function load(page) {
+                Dashboard.showLoadingMsg();
+                Promise.all([
+                    ApiClient.getPluginConfiguration(PLUGIN_ID),
+                    ApiClient.fetch({ url: ApiClient.getUrl('DistributedTranscoding/Capabilities'), dataType: 'json' }),
+                    ApiClient.fetch({ url: ApiClient.getUrl('DistributedTranscoding/Workers'), dataType: 'json' })
+                ]).then(function (res) {
+                    var config = res[0], caps = res[1], workers = res[2];
+                    el('#dtListenAddress', page).value = config.ListenAddress || '0.0.0.0';
+                    el('#dtGrpcPort', page).value = config.GrpcPort || 9090;
+                    el('#dtFirstSegmentTimeout', page).value = config.FirstSegmentTimeoutSeconds || 60;
+                    renderTypes(page, config, caps);
+                    renderRouting(page, config);
+                    renderWorkers(page, workers);
+                    Dashboard.hideLoadingMsg();
+                }).catch(function (err) {
+                    Dashboard.hideLoadingMsg();
+                    Dashboard.alert({ message: 'Failed to load Distributed Transcoding settings: ' + (err && err.message ? err.message : err) });
+                });
+            }
+            function save(page) {
+                Dashboard.showLoadingMsg();
+                ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (config) {
+                    config.ListenAddress = el('#dtListenAddress', page).value;
+                    config.GrpcPort = parseInt(el('#dtGrpcPort', page).value, 10) || 9090;
+                    config.FirstSegmentTimeoutSeconds = parseInt(el('#dtFirstSegmentTimeout', page).value, 10) || 60;
+                    config.WorkerTypes = readTypes(page);
+                    var routing = readRouting(page);
+                    config.DefaultWorkerPriority = routing.DefaultWorkerPriority;
+                    config.RoutingRules = routing.RoutingRules;
+                    ApiClient.updatePluginConfiguration(PLUGIN_ID, config).then(function (result) {
+                        Dashboard.processPluginConfigurationUpdateResult(result);
+                    });
+                });
+            }
+
+            var page = document.querySelector('#dtConfigPage');
+
+            els('.dt-tab', page).forEach(function (b) {
+                b.addEventListener('click', function () { showTab(page, b.getAttribute('data-target')); });
+            });
+            el('#dtAddRule', page).addEventListener('click', function () {
+                el('#dtRoutingBody', page).insertAdjacentHTML('beforeend', ruleRow());
+                wireDeleteButtons(page);
+            });
+
+            page.addEventListener('pageshow', function () {
+                var self = this;
+                showTab(self, 'dtTab-workers');
+                load(self);
+                self._dtPoll = setInterval(function () { fetchWorkers(self); }, 5000);
+            });
+            page.addEventListener('pagehide', function () {
+                if (this._dtPoll) { clearInterval(this._dtPoll); this._dtPoll = null; }
+            });
+            el('#dtConfigForm', page).addEventListener('submit', function (e) {
+                save(page); e.preventDefault(); return false;
+            });
+        })();
+    </script>
+</div>
+</body>
+</html>

@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using Jellyfin.Plugin.DistributedTranscoding.Configuration;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
+using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
 
 namespace Jellyfin.Plugin.DistributedTranscoding;
@@ -10,7 +12,7 @@ namespace Jellyfin.Plugin.DistributedTranscoding;
 /// The Distributed Transcoding plugin. Overrides ITranscodeManager so ffmpeg runs on remote workers,
 /// and hosts a gRPC listener those workers dial.
 /// </summary>
-public sealed class Plugin : BasePlugin<PluginConfiguration>
+public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="Plugin"/> class.
@@ -36,4 +38,14 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>
 
     /// <inheritdoc />
     public override string Description => "Offloads ffmpeg transcoding to a pool of remote worker pods over gRPC.";
+
+    /// <inheritdoc />
+    public IEnumerable<PluginPageInfo> GetPages() =>
+    [
+        new PluginPageInfo
+        {
+            Name = "DistributedTranscoding",
+            EmbeddedResourcePath = $"{GetType().Namespace}.Configuration.configPage.html",
+        },
+    ];
 }

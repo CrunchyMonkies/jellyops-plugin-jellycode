@@ -13,6 +13,7 @@ using System.Threading.Tasks;
 using Jellyfin.Data;
 using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Extensions;
+using Jellyfin.Plugin.DistributedTranscoding.Configuration;
 using Jellyfin.Plugin.DistributedTranscoding.Contracts;
 using Jellyfin.Plugin.DistributedTranscoding.Server;
 using MediaBrowser.Common;
@@ -343,54 +344,219 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
     // Job classification and software fallback
     // ----------------------------------------------------------------------------------------------
 
+    /// <summary>One step in the worker-selection sequence: a worker type to try (with an optional
+    /// requirement that it can hardware-decode the source), or an any-worker fallback.</summary>
+    private readonly record struct SelectionStage(string? Type, bool RequireHwDecode, bool AnyWorker);
+
     /// <summary>
-    /// Classifies a job as hardware-encode (needs a vaapi-capable worker) or agnostic (copy, audio-only).
+    /// Builds the ordered selection stages for a job. Video-encode jobs get two passes over the
+    /// resolved worker-type priority — first preferring workers that can hardware-decode the source,
+    /// then relaxed. Copy/audio jobs prefer a non-GPU worker, then any worker.
     /// </summary>
-    private enum JobClass
+    private static List<SelectionStage> BuildSelectionStages(bool isVideoEncode, string[] priority)
     {
-        /// <summary>The arguments contain a vaapi encoder — needs an hw-capable worker.</summary>
-        Hardware,
-
-        /// <summary>Video copy, audio-only, or software-only — can run on any worker.</summary>
-        Agnostic,
-    }
-
-    private static readonly Regex VaapiEncoderRegex = new(@"\b\w+_vaapi\b", RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
-
-    private static JobClass ClassifyJob(StreamState state, string commandLineArguments)
-    {
-        if (VaapiEncoderRegex.IsMatch(commandLineArguments))
+        var stages = new List<SelectionStage>();
+        if (isVideoEncode)
         {
-            return JobClass.Hardware;
+            foreach (var t in priority)
+            {
+                stages.Add(new SelectionStage(t, RequireHwDecode: true, AnyWorker: false));
+            }
+
+            foreach (var t in priority)
+            {
+                stages.Add(new SelectionStage(t, RequireHwDecode: false, AnyWorker: false));
+            }
+        }
+        else
+        {
+            stages.Add(new SelectionStage("cpu", RequireHwDecode: false, AnyWorker: false));
+            stages.Add(new SelectionStage(Type: null, RequireHwDecode: false, AnyWorker: true));
         }
 
-        // Copy codec or audio-only — GPU agnostic.
-        return JobClass.Agnostic;
+        return stages;
+    }
+
+    /// <summary>Builds the worker predicate for a selection stage: type match + enabled + concurrency,
+    /// plus (for encodes) a best-effort encode-capability gate and optional hw-decode requirement.</summary>
+    private Func<WorkerConnection, bool> BuildStagePredicate(SelectionStage stage, string? decodeCodec, string? encodeCodec, bool isCopy)
+    {
+        if (stage.AnyWorker || stage.Type is null)
+        {
+            return _ => true;
+        }
+
+        var type = stage.Type;
+        var opts = Config.OptionsFor(type);
+        return w =>
+        {
+            if (!opts.Enabled)
+            {
+                return false;
+            }
+
+            if (!string.Equals(w.WorkerType, type, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (!WithinConcurrency(w, opts))
+            {
+                return false;
+            }
+
+            if (!isCopy && !WorkerSupportsEncode(w, encodeCodec, type))
+            {
+                return false;
+            }
+
+            if (stage.RequireHwDecode && !WorkerCanHwDecode(w, decodeCodec, type))
+            {
+                return false;
+            }
+
+            return true;
+        };
+    }
+
+    /// <summary>Best-effort encode-capability check: a worker that reports encoders must advertise the
+    /// one needed for (encodeCodec, type); a worker reporting none (older build) is not excluded.</summary>
+    private static bool WorkerSupportsEncode(WorkerConnection w, string? encodeCodec, string type)
+    {
+        if (w.Encoders.Count == 0)
+        {
+            return true;
+        }
+
+        var encoder = WorkerTypeEncoderName(encodeCodec, type);
+        if (encoder is null)
+        {
+            return true; // unknown codec/type mapping — don't exclude
+        }
+
+        return w.Encoders.Contains(encoder, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>True when the worker advertises a hardware decoder for the source codec on this type.</summary>
+    private static bool WorkerCanHwDecode(WorkerConnection w, string? decodeCodec, string type)
+    {
+        if (string.IsNullOrEmpty(decodeCodec))
+        {
+            return false;
+        }
+
+        var names = HwDecoderNames(decodeCodec, type);
+        return names.Count > 0 && names.Any(n => w.Decoders.Contains(n, StringComparer.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Maps (codec, worker type) to the concrete ffmpeg encoder name (e.g. hevc_nvenc,
+    /// h264_vaapi, libx265). Returns null when the mapping is unknown.</summary>
+    private static string? WorkerTypeEncoderName(string? codec, string type)
+    {
+        if (string.IsNullOrEmpty(codec) || string.Equals(codec, "copy", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var c = codec.ToLowerInvariant();
+        return type.ToLowerInvariant() switch
+        {
+            "nvidia" => $"{c}_nvenc",
+            "intel" => $"{c}_vaapi",
+            "cpu" => c switch { "h264" => "libx264", "hevc" => "libx265", "av1" => "libsvtav1", _ => null },
+            _ => null,
+        };
+    }
+
+    /// <summary>Maps (codec, worker type) to the hardware decoder names for that type (NVIDIA uses
+    /// *_cuvid; Intel uses *_qsv or *_vaapi). CPU has no hardware decoders.</summary>
+    private static IReadOnlyList<string> HwDecoderNames(string codec, string type)
+    {
+        var c = codec.ToLowerInvariant();
+        return type.ToLowerInvariant() switch
+        {
+            "nvidia" => new[] { $"{c}_cuvid" },
+            "intel" => new[] { $"{c}_qsv", $"{c}_vaapi" },
+            _ => Array.Empty<string>(),
+        };
     }
 
     /// <summary>
-    /// Builds a pure-software (libx264) HLS command line by deep-cloning the server's encoding options
-    /// with hardware acceleration disabled.
+    /// Builds the HLS command line for a job destined for a given worker type (cpu / intel / nvidia),
+    /// applying that type's configured transcoding options on top of the server's encoding options.
     /// </summary>
-    private string BuildSoftwareCommandLine(StreamState state, string outputPath)
+    /// <param name="state">The stream state.</param>
+    /// <param name="outputPath">The HLS output path.</param>
+    /// <param name="workerType">The target worker type (cpu/intel/nvidia).</param>
+    /// <param name="serverArgs">The command line the server already emitted, reused verbatim for the
+    /// intel/vaapi tier when that type has no options that require regenerating the command.</param>
+    /// <returns>The final ffmpeg argument string.</returns>
+    private string BuildCommandLineForType(StreamState state, string outputPath, string workerType, string? serverArgs)
     {
-        var opts = CloneEncodingOptions(_serverConfigurationManager.GetEncodingOptions());
-        opts.HardwareAccelerationType = HardwareAccelerationType.none;
-        opts.EnableHardwareEncoding = false;
-        return _encodingHelper.GetHlsVideoCommandLine(state, opts, outputPath, 0, true);
+        var typeOpts = Config.OptionsFor(workerType);
+
+        string args;
+        if (serverArgs is not null && !NeedsRegeneration(typeOpts))
+        {
+            // Intel/vaapi tier with no structural overrides: keep the exact command the server emitted.
+            args = serverArgs;
+        }
+        else
+        {
+            var opts = CloneEncodingOptions(_serverConfigurationManager.GetEncodingOptions());
+            SetHardwareAcceleration(opts, workerType);
+            ApplyEncodingOptionOverrides(opts, typeOpts);
+            args = _encodingHelper.GetHlsVideoCommandLine(state, opts, outputPath, 0, true);
+        }
+
+        // Arg-level overrides safe to apply on any command line: encoder/codec swap, bitrate cap,
+        // hardware quality (cq/qp/global_quality) and free-text extra args.
+        return WorkerTypeArgs.Apply(args, typeOpts);
     }
 
-    /// <summary>
-    /// Builds an NVIDIA NVENC HLS command line by deep-cloning the server's encoding options and
-    /// switching the hardware acceleration type to nvenc. Used to route a job the server emitted for
-    /// the (Intel) vaapi pool onto a CUDA/NVENC worker instead.
-    /// </summary>
-    private string BuildNvencCommandLine(StreamState state, string outputPath)
+    /// <summary>Honors a type's optional per-worker max-concurrent cap when selecting a worker.</summary>
+    private static bool WithinConcurrency(Server.WorkerConnection w, WorkerTypeOptions o) =>
+        o.MaxConcurrentOverride <= 0 || w.ActiveJobs < o.MaxConcurrentOverride;
+
+    /// <summary>True when a type's options require regenerating the command from EncodingOptions
+    /// (preset or CRF) rather than reusing the server-emitted args.</summary>
+    private static bool NeedsRegeneration(WorkerTypeOptions o) =>
+        !string.IsNullOrWhiteSpace(o.Preset)
+        || string.Equals(o.QualityMode, "crf", StringComparison.OrdinalIgnoreCase);
+
+    private static void SetHardwareAcceleration(EncodingOptions opts, string workerType)
     {
-        var opts = CloneEncodingOptions(_serverConfigurationManager.GetEncodingOptions());
-        opts.HardwareAccelerationType = HardwareAccelerationType.nvenc;
-        opts.EnableHardwareEncoding = true;
-        return _encodingHelper.GetHlsVideoCommandLine(state, opts, outputPath, 0, true);
+        switch (workerType.ToLowerInvariant())
+        {
+            case "nvidia":
+                opts.HardwareAccelerationType = HardwareAccelerationType.nvenc;
+                opts.EnableHardwareEncoding = true;
+                break;
+            case "intel":
+                opts.HardwareAccelerationType = HardwareAccelerationType.vaapi;
+                opts.EnableHardwareEncoding = true;
+                break;
+            default: // cpu
+                opts.HardwareAccelerationType = HardwareAccelerationType.none;
+                opts.EnableHardwareEncoding = false;
+                break;
+        }
+    }
+
+    /// <summary>Applies the option fields that map directly onto core EncodingOptions (preset, CRF).</summary>
+    private static void ApplyEncodingOptionOverrides(EncodingOptions opts, WorkerTypeOptions o)
+    {
+        if (!string.IsNullOrWhiteSpace(o.Preset)
+            && Enum.TryParse<EncoderPreset>(o.Preset, ignoreCase: true, out var preset))
+        {
+            opts.EncoderPreset = preset;
+        }
+
+        if (string.Equals(o.QualityMode, "crf", StringComparison.OrdinalIgnoreCase) && o.QualityValue > 0)
+        {
+            opts.H264Crf = o.QualityValue;
+            opts.H265Crf = o.QualityValue;
+        }
     }
 
     private static EncodingOptions CloneEncodingOptions(EncodingOptions source)
@@ -454,56 +620,44 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
             }
         }
 
-        // Classify the job to decide pool routing.
-        var jobClass = ClassifyJob(state, commandLineArguments);
+        // Resolve codec-based routing. Both the source (decode) and target (encode) codecs are known
+        // here from the StreamState; the configured routing rules turn them into an ordered worker-type
+        // priority. Copy/audio jobs don't re-encode, so they route as GPU-agnostic (cpu-preferred).
+        var decodeCodec = state.VideoStream?.Codec;
+        var isCopy = EncodingHelper.IsCopyCodec(state.OutputVideoCodec);
+        var isVideoEncode = state.VideoStream is not null && !isCopy;
+        var encodeCodec = isCopy ? "copy" : state.ActualOutputVideoCodec;
+        var priority = Config.ResolveWorkerPriority(decodeCodec, encodeCodec);
+        var stages = BuildSelectionStages(isVideoEncode, priority);
+        _logger.LogInformation(
+            "Routing job decode={Decode} encode={Encode} -> priority [{Priority}]",
+            decodeCodec ?? "?", encodeCodec ?? "?", string.Join(",", priority));
+
         var excluded = new HashSet<string>(StringComparer.Ordinal);
         var timeout = TimeSpan.FromSeconds(Config.FirstSegmentTimeoutSeconds);
-        const int MaxAttempts = 6;
-        var fallingBack = false;    // agnostic jobs: switched from cpu-preferred to any-worker
-        int hwTier = 0;             // hardware jobs: 0 = vaapi (Intel), 1 = nvenc (NVIDIA), 2 = software (libx264)
-        const int SoftwareTier = 2;
-        string? nvencArgs = null;
-        string? softwareArgs = null;
+        var maxAttempts = stages.Count + 6;
+        int stageIndex = 0;
+        var argsByType = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         TranscodingJob? transcodingJob = null;
 
-        for (int attempt = 1; attempt <= MaxAttempts; attempt++)
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            // Determine the predicate and arguments for this attempt.
-            Func<WorkerConnection, bool> predicate;
-            string currentArgs;
+            var stage = stages[stageIndex];
+            var predicate = BuildStagePredicate(stage, decodeCodec, encodeCodec, isCopy);
 
-            if (jobClass == JobClass.Hardware)
+            // Copy/audio jobs run the server-emitted command verbatim; encode jobs get per-type args.
+            string currentArgs;
+            if (!isVideoEncode || stage.AnyWorker || stage.Type is null)
             {
-                switch (hwTier)
-                {
-                    case 0: // vaapi (Intel) — the command line the server already emitted
-                        predicate = w => w.CanVaapi;
-                        currentArgs = commandLineArguments;
-                        break;
-                    case 1: // nvenc (NVIDIA) — regenerate the command for CUDA/NVENC
-                        nvencArgs ??= BuildNvencCommandLine(state, outputPath);
-                        predicate = w => w.CanNvenc;
-                        currentArgs = nvencArgs;
-                        break;
-                    default: // software (libx264) on a non-GPU worker
-                        softwareArgs ??= BuildSoftwareCommandLine(state, outputPath);
-                        predicate = w => !w.CanVaapi && !w.CanNvenc;
-                        currentArgs = softwareArgs;
-                        break;
-                }
-            }
-            else if (fallingBack)
-            {
-                // Agnostic, no cpu-only worker was free — accept any worker.
                 currentArgs = commandLineArguments;
-                predicate = _ => true;
             }
-            else
+            else if (!argsByType.TryGetValue(stage.Type, out currentArgs!))
             {
-                // Agnostic (copy/audio): prefer non-GPU workers to keep the GPUs free.
-                currentArgs = commandLineArguments;
-                predicate = w => !w.CanVaapi && !w.CanNvenc;
+                // Intel/vaapi can reuse the server-emitted command; other types regenerate it.
+                var serverArgs = string.Equals(stage.Type, "intel", StringComparison.OrdinalIgnoreCase) ? commandLineArguments : null;
+                currentArgs = BuildCommandLineForType(state, outputPath, stage.Type, serverArgs);
+                argsByType[stage.Type] = currentArgs;
             }
 
             // Pick a worker matching the predicate.
@@ -514,37 +668,20 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
             }
             catch (TimeoutException)
             {
-                if (jobClass == JobClass.Hardware && hwTier < SoftwareTier)
+                if (stageIndex < stages.Count - 1)
                 {
-                    // No worker for this hw tier — step down: vaapi -> nvenc -> software.
+                    // No worker for this stage — advance to the next priority stage.
+                    var next = stages[stageIndex + 1];
                     _logger.LogInformation(
-                        "No {Tried} worker available; trying {Next}",
-                        hwTier == 0 ? "vaapi" : "nvenc",
-                        hwTier == 0 ? "nvenc" : "software");
-                    hwTier++;
+                        "No worker for stage {Stage} ({Type}); trying {Next}",
+                        stageIndex, stage.Type ?? "any", next.AnyWorker ? "any" : next.Type);
+                    stageIndex++;
                     excluded.Clear();
                     continue;
                 }
 
-                if (jobClass == JobClass.Agnostic && !fallingBack)
-                {
-                    // No CPU-only worker available — try any worker.
-                    fallingBack = true;
-                    try
-                    {
-                        worker = await _registry.GetWorkerAsync(timeout, _ => true, excluded, cancellationTokenSource.Token).ConfigureAwait(false);
-                    }
-                    catch (TimeoutException ex)
-                    {
-                        OnTranscodeFailedToStart(outputPath, transcodingJobType, state);
-                        throw new FfmpegException("No transcoding worker available.", ex);
-                    }
-                }
-                else
-                {
-                    OnTranscodeFailedToStart(outputPath, transcodingJobType, state);
-                    throw new FfmpegException("No transcoding worker available.");
-                }
+                OnTranscodeFailedToStart(outputPath, transcodingJobType, state);
+                throw new FfmpegException("No transcoding worker available.");
             }
 
             // Per-attempt bookkeeping — fresh job id, log stream, handle.
@@ -623,20 +760,12 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
             }
 
             logStream.Dispose();
+
+            // Exclude the rejecting worker and retry. Another worker in this stage may still qualify;
+            // if none do, the next GetWorkerAsync times out and advances to the next priority stage.
             excluded.Add(worker.WorkerId);
 
-            // A reject usually means a capability gap — step down the hw tier (vaapi -> nvenc -> software).
-            if (jobClass == JobClass.Hardware && hwTier < SoftwareTier)
-            {
-                _logger.LogInformation(
-                    "Worker rejected {Tier} job; stepping down to {Next}",
-                    hwTier == 0 ? "vaapi" : "nvenc",
-                    hwTier == 0 ? "nvenc" : "software");
-                hwTier++;
-                excluded.Clear(); // the next tier's workers haven't been tried yet
-            }
-
-            if (attempt >= MaxAttempts)
+            if (attempt >= maxAttempts)
             {
                 OnTranscodeFailedToStart(outputPath, transcodingJobType, state);
                 throw new FfmpegException("Worker did not accept the transcoding job.");

@@ -35,6 +35,13 @@ public sealed class WorkerRegistry
     }
 
     /// <summary>
+    /// Returns a point-in-time snapshot of all currently connected workers (for the settings UI /
+    /// status API). The returned collection is a copy; the live <see cref="WorkerConnection"/>
+    /// instances are shared (their mutable slot/job counts reflect the latest heartbeat).
+    /// </summary>
+    public IReadOnlyCollection<WorkerConnection> Snapshot() => _workers.Values.ToArray();
+
+    /// <summary>
     /// Waits up to <paramref name="timeout"/> for a worker with a free slot and returns it.
     /// </summary>
     public Task<WorkerConnection> GetWorkerAsync(TimeSpan timeout, CancellationToken cancellationToken)
