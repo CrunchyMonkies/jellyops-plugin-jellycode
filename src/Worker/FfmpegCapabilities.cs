@@ -16,7 +16,8 @@ public sealed record FfmpegCapabilities(
     string Version,
     IReadOnlyList<string> HwAccels,
     IReadOnlyList<string> Encoders,
-    IReadOnlyList<string> Decoders)
+    IReadOnlyList<string> Decoders,
+    IReadOnlyList<string> HwAccelMethods)
 {
     /// <summary>The video encoders we care about advertising, by name as ffmpeg lists them.</summary>
     private static readonly string[] KnownVideoEncoders =
@@ -64,8 +65,76 @@ public sealed record FfmpegCapabilities(
         var version = ParseVersion(RunFfmpeg(ffmpegPath, "-hide_banner -version"));
         var encoders = ParseEncoders(RunFfmpeg(ffmpegPath, "-hide_banner -encoders"));
         var decoders = ParseVideoList(RunFfmpeg(ffmpegPath, "-hide_banner -decoders"), DecodersLineRegex, KnownVideoDecoders);
+        var methods = ParseHwAccelMethods(RunFfmpeg(ffmpegPath, "-hide_banner -hwaccels"));
         var hwaccels = DeriveHwAccels(encoders);
-        return new FfmpegCapabilities(version, hwaccels, encoders, decoders);
+        return new FfmpegCapabilities(version, hwaccels, encoders, decoders, methods);
+    }
+
+    /// <summary>
+    /// Builds a worker's advertised decoder list. Named decoders (software + <c>*_cuvid</c> / <c>*_qsv</c>)
+    /// are kept for the worker's accelerators; additionally, VAAPI/QSV per-codec hardware decoders are
+    /// SYNTHESIZED — ffmpeg exposes VAAPI (and often QSV) decode through <c>-hwaccel</c>, not as named
+    /// <c>-decoders</c> entries, so a <c>hevc_vaapi</c> decoder is inferred when the worker advertises the
+    /// accelerator, ffmpeg was built with that hwaccel method, and a software decoder for the base codec
+    /// exists.
+    /// </summary>
+    /// <param name="namedDecoders">The named decoders parsed from <c>-decoders</c>.</param>
+    /// <param name="hwAccelMethods">The hwaccel methods parsed from <c>-hwaccels</c>.</param>
+    /// <param name="workerHwAccels">The accelerators the worker actually advertises (from env).</param>
+    /// <returns>The effective decoder capability list.</returns>
+    public static IReadOnlyList<string> BuildDecoderCapabilities(
+        IReadOnlyList<string> namedDecoders,
+        IReadOnlyList<string> hwAccelMethods,
+        IReadOnlyList<string> workerHwAccels)
+    {
+        // Keep software + named hardware decoders usable by the worker's accelerators.
+        var result = FilterForAccels(namedDecoders, workerHwAccels).ToList();
+
+        // Base (software) codec names present — the set we can VAAPI/QSV-decode.
+        var baseCodecs = namedDecoders.Where(d => AcceleratorOf(d.ToLowerInvariant()) is null).ToList();
+
+        foreach (var accel in new[] { "vaapi", "qsv" })
+        {
+            if (!workerHwAccels.Contains(accel, StringComparer.OrdinalIgnoreCase)
+                || !hwAccelMethods.Contains(accel, StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            foreach (var codec in baseCodecs)
+            {
+                var name = $"{codec}_{accel}";
+                if (!result.Contains(name, StringComparer.OrdinalIgnoreCase))
+                {
+                    result.Add(name);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>Parses the accelerator method names from <c>ffmpeg -hwaccels</c> output (cuda, vaapi,
+    /// qsv, …). These are the methods ffmpeg was compiled with, not proof the hardware is present.</summary>
+    internal static IReadOnlyList<string> ParseHwAccelMethods(string output)
+    {
+        var methods = new List<string>();
+        foreach (var line in output.Split('\n'))
+        {
+            var token = line.Trim();
+            // Skip the header line and blanks; method lines are single tokens (no spaces).
+            if (token.Length == 0 || token.Contains(' ') || token.EndsWith(":", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!methods.Contains(token, StringComparer.OrdinalIgnoreCase))
+            {
+                methods.Add(token);
+            }
+        }
+
+        return methods;
     }
 
     /// <summary>

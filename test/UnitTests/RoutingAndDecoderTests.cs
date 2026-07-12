@@ -97,6 +97,60 @@ public class RoutingAndDecoderTests
         Assert.Equal(new[] { "h264", "hevc" }, cpu);
     }
 
+    [Fact]
+    public void ParseHwAccelMethods_ExtractsSingleTokenLines()
+    {
+        const string output = "Hardware acceleration methods:\ncuda\nvaapi\nqsv\ndrm\nvulkan\n";
+        var methods = FfmpegCapabilities.ParseHwAccelMethods(output);
+        Assert.Equal(new[] { "cuda", "vaapi", "qsv", "drm", "vulkan" }, methods);
+    }
+
+    [Fact]
+    public void BuildDecoderCapabilities_SynthesizesVaapiWhenNamedDecodersAbsent()
+    {
+        // Intel/VAAPI: ffmpeg has no named *_vaapi decoders, so they must be inferred from -hwaccels.
+        var named = new[] { "h264", "hevc", "av1", "vp9" };            // software decoders only
+        var methods = new[] { "cuda", "vaapi", "qsv", "drm" };          // compiled hwaccel methods
+        var result = FfmpegCapabilities.BuildDecoderCapabilities(named, methods, new[] { "vaapi" });
+        Assert.Contains("hevc_vaapi", result);
+        Assert.Contains("h264_vaapi", result);
+        Assert.Contains("av1_vaapi", result);
+        Assert.Contains("hevc", result);                                // software kept
+        Assert.DoesNotContain("hevc_qsv", result);                      // qsv not advertised by worker
+        Assert.DoesNotContain("hevc_cuvid", result);                    // not an nvidia worker
+    }
+
+    [Fact]
+    public void BuildDecoderCapabilities_KeepsNamedCuvidForNvidia()
+    {
+        var named = new[] { "h264", "hevc", "h264_cuvid", "hevc_cuvid" };
+        var methods = new[] { "cuda", "vaapi", "qsv" };
+        var result = FfmpegCapabilities.BuildDecoderCapabilities(named, methods, new[] { "nvenc" });
+        Assert.Contains("h264_cuvid", result);
+        Assert.Contains("hevc_cuvid", result);
+        Assert.DoesNotContain("hevc_vaapi", result);                    // vaapi not advertised
+    }
+
+    [Fact]
+    public void BuildDecoderCapabilities_CpuKeepsOnlySoftware()
+    {
+        var named = new[] { "h264", "hevc", "av1" };
+        var methods = new[] { "vaapi", "qsv" };
+        var result = FfmpegCapabilities.BuildDecoderCapabilities(named, methods, System.Array.Empty<string>());
+        Assert.Equal(new[] { "h264", "hevc", "av1" }, result);
+    }
+
+    [Fact]
+    public void BuildDecoderCapabilities_NoSynthWhenMethodNotCompiled()
+    {
+        // Worker advertises vaapi but ffmpeg wasn't built with the vaapi hwaccel method.
+        var named = new[] { "h264", "hevc" };
+        var methods = new[] { "cuda" };
+        var result = FfmpegCapabilities.BuildDecoderCapabilities(named, methods, new[] { "vaapi" });
+        Assert.DoesNotContain("hevc_vaapi", result);
+        Assert.Equal(new[] { "h264", "hevc" }, result);
+    }
+
     // Mirror the private regex/whitelist shape used by the decoder probe.
     private static System.Text.RegularExpressions.Regex DecoderRegex() =>
         new(@"^\s*V[\.A-Z]{5,}\s+(\S+)", System.Text.RegularExpressions.RegexOptions.None, System.TimeSpan.FromMilliseconds(200));

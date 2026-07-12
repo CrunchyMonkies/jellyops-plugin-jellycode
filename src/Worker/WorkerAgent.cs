@@ -74,7 +74,9 @@ public sealed class WorkerAgent
         // This is what drives the per-type codec options in the plugin settings UI.
         var caps = FfmpegCapabilities.Probe(_ffmpegPath);
         _encoders = FfmpegCapabilities.FilterForAccels(caps.Encoders, _hwAccels).ToArray();
-        _decoders = FfmpegCapabilities.FilterForAccels(caps.Decoders, _hwAccels).ToArray();
+        // Decode capability includes VAAPI/QSV entries synthesized from -hwaccels, since ffmpeg exposes
+        // those decoders via -hwaccel rather than as named -decoders entries.
+        _decoders = FfmpegCapabilities.BuildDecoderCapabilities(caps.Decoders, caps.HwAccelMethods, _hwAccels).ToArray();
         _ffmpegVersion = caps.Version;
 
         Console.WriteLine($"[worker] ffmpeg {_ffmpegVersion}; hwaccels=[{string.Join(",", _hwAccels)}]; encoders=[{string.Join(",", _encoders)}]; decoders=[{string.Join(",", _decoders)}]");
