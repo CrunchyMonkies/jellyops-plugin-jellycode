@@ -26,6 +26,11 @@ public sealed class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     }
 
     /// <summary>
+    /// The plugin GUID in string form, used as the File Transformation registration id.
+    /// </summary>
+    public const string PluginGuid = "b9f8c1a2-3d4e-4f5a-9b6c-7d8e9f0a1b2c";
+
+    /// <summary>
     /// Gets the current plugin instance.
     /// </summary>
     public static Plugin? Instance { get; private set; }

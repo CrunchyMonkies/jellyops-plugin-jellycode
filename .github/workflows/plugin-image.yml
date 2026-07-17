@@ -1,0 +1,113 @@
+name: Build & Publish Plugin Image
+
+# Compiles the Distributed Transcoding plugin (src/Plugin) against the Jellyfin v12 (.NET 10)
+# assemblies, strips host assemblies, and packages the payload into a FROM-scratch image-volume
+# payload pushed to GHCR (provenance disabled so the kubelet mounts it cleanly as an image volume).
+#
+# The plugin compiles against the Jellyfin fork's assemblies, so this workflow checks out
+# CrunchyMonkies/jellyfin as a sibling (dir `jellyfin-src`, matching the csproj's
+# ../../../jellyfin-src relative ProjectReferences) at the tag the deployed server runs.
+# CrunchyMonkies/jellyfin is public, so the default GITHUB_TOKEN can read it; set the optional repo
+# secret JELLYFIN_SRC_TOKEN (PAT with contents:read) only if that repo is made private.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      jellyfin_src_ref:
+        description: "CrunchyMonkies/jellyfin ref (branch/tag) to build against"
+        required: true
+        default: "v12.0.0-rc2-jc-0.2.0"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}/plugin
+  JELLYFIN_SRC_REPO: CrunchyMonkies/jellyfin
+  # Build against the exact tag the deployed server image was built from, so the plugin's compiled
+  # ABI matches the running host.
+  JELLYFIN_SRC_REF: ${{ github.event.inputs.jellyfin_src_ref || 'v12.0.0-rc2-jc-0.2.0' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout plugin repo
+        uses: actions/checkout@v4
+        with:
+          path: plugin-repo
+
+      - name: Checkout jellyfin-src (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.JELLYFIN_SRC_REPO }}
+          ref: ${{ env.JELLYFIN_SRC_REF }}
+          token: ${{ secrets.JELLYFIN_SRC_TOKEN || secrets.GITHUB_TOKEN }}
+          path: jellyfin-src
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Publish plugin payload
+        working-directory: plugin-repo
+        run: |
+          dotnet publish src/Plugin/Jellyfin.Plugin.DistributedTranscoding.csproj -c Release -o publish -v minimal
+          mkdir -p plugin
+          cp publish/*.dll plugin/
+          cp publish/meta.json plugin/meta.json
+          # Fail if host assemblies OR Newtonsoft leaked (all must resolve from the host ALC). The
+          # plugin + its Contracts assembly (Jellyfin.Plugin.DistributedTranscoding*) are kept.
+          leaked="$(find plugin -maxdepth 1 -type f \( -name 'Emby.*' -o -name 'MediaBrowser.*' \
+            -o -name 'Newtonsoft.*' -o \( -name 'Jellyfin.*' -a ! -name 'Jellyfin.Plugin.DistributedTranscoding*' \) \))"
+          if [ -n "$leaked" ]; then
+            echo "forbidden assemblies leaked into payload:" >&2; echo "$leaked" >&2; exit 1
+          fi
+          echo "Payload:"; ls -1 plugin
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest
+
+      - name: Build & push (provenance disabled)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: plugin-repo
+          file: plugin-repo/docker/Dockerfile.plugin
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Summary
+        run: |
+          {
+            echo "### Distributed Transcoding plugin image published"
+            echo ""
+            echo "- Built against: \`${JELLYFIN_SRC_REPO}\` @ \`${JELLYFIN_SRC_REF}\`"
+            echo "- Digest: \`${{ steps.build.outputs.digest }}\`"
+            echo ""
+            echo "Pin the deployment (spec.pluginImage.reference):"
+            echo ""
+            echo '```'
+            echo "${IMAGE}@${{ steps.build.outputs.digest }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

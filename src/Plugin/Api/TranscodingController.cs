@@ -1,6 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
+using System.Threading;
 using Jellyfin.Plugin.DistributedTranscoding.Server;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -18,6 +22,10 @@ namespace Jellyfin.Plugin.DistributedTranscoding.Api;
 [Produces("application/json")]
 public class TranscodingController : ControllerBase
 {
+    // The dashboard client script is a small embedded asset; load + hash it once (thread-safe).
+    private static readonly Lazy<(string Content, string ETag)> ScriptCache =
+        new(LoadScriptFromResource, LazyThreadSafetyMode.ExecutionAndPublication);
+
     private readonly WorkerRegistry _registry;
 
     /// <summary>
@@ -27,6 +35,45 @@ public class TranscodingController : ControllerBase
     public TranscodingController(WorkerRegistry registry)
     {
         _registry = registry;
+    }
+
+    /// <summary>
+    /// Returns the Distributed Transcoding dashboard client script. Injected into index.html by the
+    /// File Transformation plugin; it hides the native transcoding controls this plugin overrides and
+    /// links to the plugin settings. Served anonymously because the browser fetches it as a plain
+    /// &lt;script&gt; with no API auth header.
+    /// </summary>
+    /// <returns>The client JavaScript.</returns>
+    [HttpGet("ClientScript")]
+    [AllowAnonymous]
+    [Produces("text/javascript")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult GetClientScript()
+    {
+        var (content, etag) = ScriptCache.Value;
+
+        var requestETag = Request.Headers.IfNoneMatch.FirstOrDefault();
+        if (!string.IsNullOrEmpty(requestETag) && requestETag == etag)
+        {
+            return StatusCode(StatusCodes.Status304NotModified);
+        }
+
+        Response.Headers.CacheControl = "public, max-age=3600";
+        Response.Headers.ETag = etag;
+        return Content(content, "text/javascript");
+    }
+
+    private static (string Content, string ETag) LoadScriptFromResource()
+    {
+        var assembly = typeof(TranscodingController).Assembly;
+        const string ResourceName = "Jellyfin.Plugin.DistributedTranscoding.Web.plugin.js";
+        using var stream = assembly.GetManifestResourceStream(ResourceName)
+            ?? throw new InvalidOperationException($"Embedded resource '{ResourceName}' not found");
+        using var reader = new StreamReader(stream);
+        var content = reader.ReadToEnd();
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(content));
+        var etag = $"\"{Convert.ToBase64String(hash)[..16]}\"";
+        return (content, etag);
     }
 
     /// <summary>

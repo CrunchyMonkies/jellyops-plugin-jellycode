@@ -20,6 +20,7 @@
                             <button type="button" is="emby-button" class="dt-tab raised" data-target="dtTab-workers">Workers</button>
                             <button type="button" is="emby-button" class="dt-tab raised" data-target="dtTab-types">Worker types</button>
                             <button type="button" is="emby-button" class="dt-tab raised" data-target="dtTab-routing">Routing</button>
+                            <button type="button" is="emby-button" class="dt-tab raised" data-target="dtTab-encoding">Transcoding defaults</button>
                             <button type="button" is="emby-button" class="dt-tab raised" data-target="dtTab-mesh">Mesh</button>
                         </div>
                     </div>
@@ -96,6 +97,18 @@
                         </button>
                     </div>
 
+                    <!-- ===== Tab: Transcoding defaults ===== -->
+                    <div id="dtTab-encoding" class="dt-panel verticalSection" style="display:none;">
+                        <h3 class="sectionTitle">Transcoding defaults</h3>
+                        <div class="fieldDescription" style="margin-bottom:0.5em;">
+                            These are Jellyfin's core encoding settings, surfaced here because the plugin
+                            overrides the matching controls on the native Playback → Transcoding page (they
+                            are hidden there). Per-worker-type overrides on the "Worker types" tab take
+                            precedence over these global defaults.
+                        </div>
+                        <div id="dtEncoding"></div>
+                    </div>
+
                     <!-- ===== Tab: Mesh ===== -->
                     <div id="dtTab-mesh" class="dt-panel verticalSection" style="display:none;">
                         <h3 class="sectionTitle">Mesh listener</h3>
@@ -131,6 +144,13 @@
             var DECODE_CODECS = ['any', 'h264', 'hevc', 'av1', 'vp9', 'vp8', 'mpeg4', 'mpeg2video'];
             var ENCODE_CODECS = ['any', 'copy', 'h264', 'hevc', 'av1'];
             var PRIORITY_CHOICES = ['', 'cpu', 'intel', 'nvidia'];
+            // Core-encoding enum choices for the "Transcoding defaults" tab (values match Jellyfin's
+            // EncodingOptions serialization — the same the native Playback → Transcoding page writes).
+            var ACCEL = ['none', 'amf', 'nvenc', 'qsv', 'vaapi', 'rkmpp', 'videotoolbox', 'v4l2m2m'];
+            var TM_ALGO = ['none', 'clip', 'linear', 'gamma', 'reinhard', 'hable', 'mobius', 'bt2390'];
+            var TM_MODE = ['auto', 'max', 'rgb', 'lum', 'itp'];
+            var TM_RANGE = ['auto', 'tv', 'pc'];
+            var ENC_PRESETS = ['auto', 'veryslow', 'slower', 'slow', 'medium', 'fast', 'faster', 'veryfast', 'superfast', 'ultrafast'];
 
             function el(id, ctx) { return (ctx || document).querySelector(id); }
             function els(sel, ctx) { return Array.prototype.slice.call((ctx || document).querySelectorAll(sel)); }
@@ -316,21 +336,113 @@
                     .catch(function () { });
             }
 
+            // ---------- Transcoding defaults tab (core encoding config) ----------
+            function ecChk(id, label, val) {
+                return '<label style="display:block;margin:0.3em 0;"><input type="checkbox" id="dtEnc-' + id + '"' + (val ? ' checked' : '') + ' /> ' + esc(label) + '</label>';
+            }
+            function ecNum(id, label, val, step) {
+                return '<div class="inputContainer"><label class="inputLabel" for="dtEnc-' + id + '">' + esc(label) + '</label>' +
+                    '<input id="dtEnc-' + id + '" type="number"' + (step ? ' step="' + step + '"' : '') + ' class="emby-input" value="' + (val == null ? '' : val) + '" /></div>';
+            }
+            function ecTxt(id, label, val) {
+                return '<div class="inputContainer"><label class="inputLabel" for="dtEnc-' + id + '">' + esc(label) + '</label>' +
+                    '<input id="dtEnc-' + id + '" type="text" class="emby-input" value="' + esc(val || '') + '" /></div>';
+            }
+            function ecSel(id, label, list, val) {
+                return '<div class="inputContainer"><label class="inputLabel" for="dtEnc-' + id + '">' + esc(label) + '</label>' +
+                    '<select id="dtEnc-' + id + '" class="emby-select">' + opt(list, val, false) + '</select></div>';
+            }
+            function ecSet(title, inner) {
+                return '<fieldset class="verticalSection" style="border:1px solid rgba(127,127,127,0.35);border-radius:6px;padding:0.6em 1em;margin-bottom:0.8em;"><legend style="font-weight:600;">' + esc(title) + '</legend>' + inner + '</fieldset>';
+            }
+            function renderEncoding(page, enc) {
+                enc = enc || {};
+                var html =
+                    ecSet('Hardware acceleration',
+                        ecSel('HardwareAccelerationType', 'Hardware acceleration', ACCEL, enc.HardwareAccelerationType || 'none') +
+                        ecTxt('VaapiDevice', 'VA-API device', enc.VaapiDevice) +
+                        ecTxt('QsvDevice', 'QSV device', enc.QsvDevice) +
+                        ecChk('EnableHardwareEncoding', 'Enable hardware encoding', enc.EnableHardwareEncoding) +
+                        ecChk('EnableDecodingColorDepth10Hevc', 'HEVC 10-bit HW decoding', enc.EnableDecodingColorDepth10Hevc) +
+                        ecChk('EnableDecodingColorDepth10Vp9', 'VP9 10-bit HW decoding', enc.EnableDecodingColorDepth10Vp9) +
+                        ecChk('EnableDecodingColorDepth10HevcRext', 'HEVC RExt 8/10-bit HW decoding', enc.EnableDecodingColorDepth10HevcRext) +
+                        ecChk('EnableDecodingColorDepth12HevcRext', 'HEVC RExt 12-bit HW decoding', enc.EnableDecodingColorDepth12HevcRext)) +
+                    ecSet('Tone mapping',
+                        ecChk('EnableTonemapping', 'Enable tone mapping', enc.EnableTonemapping) +
+                        ecSel('TonemappingAlgorithm', 'Algorithm', TM_ALGO, enc.TonemappingAlgorithm || 'bt2390') +
+                        ecSel('TonemappingMode', 'Mode', TM_MODE, enc.TonemappingMode || 'auto') +
+                        ecSel('TonemappingRange', 'Range', TM_RANGE, enc.TonemappingRange || 'auto') +
+                        ecNum('TonemappingDesat', 'Desat', enc.TonemappingDesat, 'any') +
+                        ecNum('TonemappingPeak', 'Peak', enc.TonemappingPeak, 'any') +
+                        ecNum('TonemappingParam', 'Param', enc.TonemappingParam, 'any') +
+                        ecChk('EnableVppTonemapping', 'Enable VPP tone mapping (QSV/VAAPI)', enc.EnableVppTonemapping) +
+                        ecNum('VppTonemappingBrightness', 'VPP brightness', enc.VppTonemappingBrightness, 'any') +
+                        ecNum('VppTonemappingContrast', 'VPP contrast', enc.VppTonemappingContrast, 'any')) +
+                    ecSet('Encoding quality',
+                        ecSel('EncoderPreset', 'Encoder preset', ENC_PRESETS, enc.EncoderPreset || 'auto') +
+                        ecNum('H264Crf', 'H.264 CRF', enc.H264Crf) +
+                        ecNum('H265Crf', 'H.265 CRF', enc.H265Crf) +
+                        ecNum('EncodingThreadCount', 'Transcoding thread count (0 = max, -1 = auto)', enc.EncodingThreadCount)) +
+                    ecSet('Throttling & segment cleanup',
+                        ecChk('EnableThrottling', 'Enable FFmpeg throttling', enc.EnableThrottling) +
+                        ecNum('ThrottleDelaySeconds', 'Throttle after (seconds)', enc.ThrottleDelaySeconds) +
+                        ecChk('EnableSegmentDeletion', 'Enable segment deletion', enc.EnableSegmentDeletion) +
+                        ecNum('SegmentKeepSeconds', 'Keep segments (seconds)', enc.SegmentKeepSeconds));
+                el('#dtEncoding', page).innerHTML = html;
+            }
+            function readEncoding(page, enc) {
+                function chk(id) { var e = el('#dtEnc-' + id, page); return e ? e.checked : undefined; }
+                function val(id) { var e = el('#dtEnc-' + id, page); return e ? e.value : undefined; }
+                function num(id, float) { var e = el('#dtEnc-' + id, page); if (!e) { return undefined; } var v = float ? parseFloat(e.value) : parseInt(e.value, 10); return isNaN(v) ? 0 : v; }
+                var m = {
+                    HardwareAccelerationType: val('HardwareAccelerationType'),
+                    VaapiDevice: val('VaapiDevice'),
+                    QsvDevice: val('QsvDevice'),
+                    EnableHardwareEncoding: chk('EnableHardwareEncoding'),
+                    EnableDecodingColorDepth10Hevc: chk('EnableDecodingColorDepth10Hevc'),
+                    EnableDecodingColorDepth10Vp9: chk('EnableDecodingColorDepth10Vp9'),
+                    EnableDecodingColorDepth10HevcRext: chk('EnableDecodingColorDepth10HevcRext'),
+                    EnableDecodingColorDepth12HevcRext: chk('EnableDecodingColorDepth12HevcRext'),
+                    EnableTonemapping: chk('EnableTonemapping'),
+                    TonemappingAlgorithm: val('TonemappingAlgorithm'),
+                    TonemappingMode: val('TonemappingMode'),
+                    TonemappingRange: val('TonemappingRange'),
+                    TonemappingDesat: num('TonemappingDesat', true),
+                    TonemappingPeak: num('TonemappingPeak', true),
+                    TonemappingParam: num('TonemappingParam', true),
+                    EnableVppTonemapping: chk('EnableVppTonemapping'),
+                    VppTonemappingBrightness: num('VppTonemappingBrightness', true),
+                    VppTonemappingContrast: num('VppTonemappingContrast', true),
+                    EncoderPreset: val('EncoderPreset'),
+                    H264Crf: num('H264Crf'),
+                    H265Crf: num('H265Crf'),
+                    EncodingThreadCount: num('EncodingThreadCount'),
+                    EnableThrottling: chk('EnableThrottling'),
+                    ThrottleDelaySeconds: num('ThrottleDelaySeconds'),
+                    EnableSegmentDeletion: chk('EnableSegmentDeletion'),
+                    SegmentKeepSeconds: num('SegmentKeepSeconds')
+                };
+                for (var k in m) { if (m[k] !== undefined) { enc[k] = m[k]; } }
+                return enc;
+            }
+
             // ---------- Load / save ----------
             function load(page) {
                 Dashboard.showLoadingMsg();
                 Promise.all([
                     ApiClient.getPluginConfiguration(PLUGIN_ID),
                     ApiClient.fetch({ url: ApiClient.getUrl('DistributedTranscoding/Capabilities'), dataType: 'json' }),
-                    ApiClient.fetch({ url: ApiClient.getUrl('DistributedTranscoding/Workers'), dataType: 'json' })
+                    ApiClient.fetch({ url: ApiClient.getUrl('DistributedTranscoding/Workers'), dataType: 'json' }),
+                    ApiClient.getNamedConfiguration('encoding').catch(function () { return {}; })
                 ]).then(function (res) {
-                    var config = res[0], caps = res[1], workers = res[2];
+                    var config = res[0], caps = res[1], workers = res[2], enc = res[3];
                     el('#dtListenAddress', page).value = config.ListenAddress || '0.0.0.0';
                     el('#dtGrpcPort', page).value = config.GrpcPort || 9090;
                     el('#dtFirstSegmentTimeout', page).value = config.FirstSegmentTimeoutSeconds || 60;
                     renderTypes(page, config, caps);
                     renderRouting(page, config);
                     renderWorkers(page, workers);
+                    renderEncoding(page, enc);
                     Dashboard.hideLoadingMsg();
                 }).catch(function (err) {
                     Dashboard.hideLoadingMsg();
@@ -348,7 +460,14 @@
                     config.DefaultWorkerPriority = routing.DefaultWorkerPriority;
                     config.RoutingRules = routing.RoutingRules;
                     ApiClient.updatePluginConfiguration(PLUGIN_ID, config).then(function (result) {
-                        Dashboard.processPluginConfigurationUpdateResult(result);
+                        // Persist the "Transcoding defaults" tab into Jellyfin's core encoding config
+                        // (best-effort — a failure here still reports the plugin-config save result).
+                        ApiClient.getNamedConfiguration('encoding').then(function (enc) {
+                            readEncoding(page, enc);
+                            return ApiClient.updateNamedConfiguration('encoding', enc);
+                        }).catch(function () { /* best-effort */ }).then(function () {
+                            Dashboard.processPluginConfigurationUpdateResult(result);
+                        });
                     });
                 });
             }

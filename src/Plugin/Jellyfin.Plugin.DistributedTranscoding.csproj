@@ -15,6 +15,10 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Grpc.AspNetCore" Version="2.71.0" />
+    <!-- Bind to the HOST's Newtonsoft.Json (ExcludeAssets=runtime): the File Transformation plugin's
+         RegisterTransformation(JObject) takes a Newtonsoft JObject, and JObject type identity must
+         resolve to the host's copy or the cross-ALC reflected Invoke throws ArgumentException. -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <ItemGroup>
@@ -45,9 +49,11 @@
     <None Include="meta.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
-  <!-- Settings page served by the Jellyfin dashboard (IHasWebPages). -->
+  <!-- Settings page served by the Jellyfin dashboard (IHasWebPages), plus the dashboard client
+       script served by TranscodingController (GET /DistributedTranscoding/ClientScript). -->
   <ItemGroup>
     <EmbeddedResource Include="Configuration\configPage.html" />
+    <EmbeddedResource Include="Web\plugin.js" />
   </ItemGroup>
 
   <!--
@@ -56,12 +62,22 @@
     identity in the plugin's load context. Strip them, keeping only our own assemblies and the
     third-party deps the host does NOT provide (Grpc.*, Google.Protobuf).
   -->
-  <Target Name="StripHostAssemblies" AfterTargets="Build;Publish">
+  <Target Name="StripHostAssemblies" AfterTargets="Build">
     <ItemGroup>
       <_HostAssemblies Include="$(OutDir)Emby.*;$(OutDir)Jellyfin.*;$(OutDir)MediaBrowser.*"
                        Exclude="$(OutDir)Jellyfin.Plugin.DistributedTranscoding*" />
     </ItemGroup>
     <Delete Files="@(_HostAssemblies)" />
+  </Target>
+
+  <!-- Publish emits the full dependency closure into $(PublishDir); strip the host assemblies there
+       too (the CI plugin-image workflow publishes and guards against leaked host DLLs). -->
+  <Target Name="StripHostAssembliesFromPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <_PubHostAssemblies Include="$(PublishDir)Emby.*;$(PublishDir)Jellyfin.*;$(PublishDir)MediaBrowser.*"
+                          Exclude="$(PublishDir)Jellyfin.Plugin.DistributedTranscoding*" />
+    </ItemGroup>
+    <Delete Files="@(_PubHostAssemblies)" />
   </Target>
 
 </Project>
