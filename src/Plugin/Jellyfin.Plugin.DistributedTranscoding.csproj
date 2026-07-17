@@ -54,6 +54,7 @@
   <ItemGroup>
     <EmbeddedResource Include="Configuration\configPage.html" />
     <EmbeddedResource Include="Web\plugin.js" />
+    <EmbeddedResource Include="Web\chart.umd.min.js" />
   </ItemGroup>
 
   <!--

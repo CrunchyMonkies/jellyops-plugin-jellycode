@@ -42,6 +42,12 @@ public sealed class RemoteJobHandle : IDisposable
 
     public Stream LogStream { get; }
 
+    /// <summary>
+    /// Gets or sets the last reported ffmpeg encode speed (multiple of realtime).
+    /// Stored here because the core <see cref="TranscodingJob"/> has no speed field.
+    /// </summary>
+    public float Speed { get; set; }
+
     public TaskCompletionSource<bool> AcceptedTcs { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>

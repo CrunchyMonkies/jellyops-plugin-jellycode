@@ -30,6 +30,9 @@ public sealed class PluginServiceRegistrator : IPluginServiceRegistrator
         // The gRPC service delivers worker frames to the same manager instance.
         serviceCollection.AddSingleton<IRemoteFrameSink>(sp => sp.GetRequiredService<RemoteTranscodeManager>());
 
+        // Metrics API resolves active-job snapshots from the same manager instance.
+        serviceCollection.AddSingleton<IActiveJobSource>(sp => sp.GetRequiredService<RemoteTranscodeManager>());
+
         // Self-hosted Kestrel + gRPC listener the workers dial.
         serviceCollection.AddHostedService<GrpcHostedService>();
 

@@ -1,0 +1,35 @@
+# ServiceMonitor for the distributed-transcoding worker's Prometheus /metrics endpoint.
+#
+# The operator renders the jellycode-worker-metrics Service (declared in 30-jellyfinplugin.yaml)
+# and stamps it with the labels selected below. Confirmed from BuildPluginService in
+# jellyops/internal/plugins/workloads.go — every operator-rendered Service receives exactly:
+#   jellyfin.jellyops.io/plugin: <JellyfinPlugin.metadata.name>
+#   app.kubernetes.io/managed-by: jellyops
+#
+# NOTE: If the Prometheus CR's serviceMonitorSelector requires an additional label
+# (e.g. release: kube-prometheus-stack), add it to metadata.labels below — the
+# existing jellyops monitor (jellyops/config/prometheus/monitor.yaml) uses
+# app.kubernetes.io/managed-by: kustomize and app.kubernetes.io/name: jellyops,
+# which appear to be sufficient for the in-cluster Prometheus in the system namespace;
+# verify the Prometheus CR's serviceMonitorSelector if scraping does not start.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: jellycode-worker-metrics
+  namespace: media
+  labels:
+    app.kubernetes.io/name: jellyops
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+  selector:
+    matchLabels:
+      # Labels stamped by BuildPluginService on every operator-rendered Service.
+      jellyfin.jellyops.io/plugin: jellycode-distributed-transcoding
+      app.kubernetes.io/managed-by: jellyops
+  namespaceSelector:
+    matchNames:
+      - media

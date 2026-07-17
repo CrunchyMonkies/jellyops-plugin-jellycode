@@ -37,6 +37,12 @@ spec:
         - name: grpc
           port: 9090
           targetPort: 9090
+    - name: jellycode-worker-metrics
+      selector: workload:worker # -> the worker Deployment pods
+      ports:
+        - name: metrics
+          port: 9091
+          targetPort: 9091
   workloads:
     - name: worker
       image:
@@ -61,6 +67,11 @@ spec:
           value: "2"
         - name: DT_SCRATCH
           value: "/tmp/worker"
+        - name: DT_METRICS_PORT
+          value: "9091"
+      ports:
+        - name: metrics
+          containerPort: 9091
       # Media is auto-mounted by the operator from the bound Jellyfin instance's
       # spec.storage.media (read-only, same paths). Only the local scratch dir is
       # declared here.

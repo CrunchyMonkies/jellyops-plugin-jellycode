@@ -28,6 +28,7 @@ public sealed class WorkerAgent
     private readonly string[] _encoders;
     private readonly string[] _decoders;
     private readonly string _ffmpegVersion;
+    private readonly WorkerMetrics _metrics;
 
     private readonly ConcurrentDictionary<string, FfmpegJob> _jobs = new(StringComparer.Ordinal);
 
@@ -40,13 +41,14 @@ public sealed class WorkerAgent
 
     private volatile bool _draining;
 
-    public WorkerAgent(string serverUrl, string workerId, string ffmpegPath, string scratchRoot, int maxConcurrent)
+    public WorkerAgent(string serverUrl, string workerId, string ffmpegPath, string scratchRoot, int maxConcurrent, WorkerMetrics metrics)
     {
         _serverUrl = serverUrl;
         _workerId = workerId;
         _ffmpegPath = ffmpegPath;
         _scratchRoot = scratchRoot;
         _maxConcurrent = Math.Max(1, maxConcurrent);
+        _metrics = metrics;
 
         // The worker's actual hardware accelerators are declared by env, not inferred from ffmpeg's
         // encoder list (ffmpeg advertises every compiled-in encoder regardless of whether the hardware
@@ -80,6 +82,12 @@ public sealed class WorkerAgent
         _ffmpegVersion = caps.Version;
 
         Console.WriteLine($"[worker] ffmpeg {_ffmpegVersion}; hwaccels=[{string.Join(",", _hwAccels)}]; encoders=[{string.Join(",", _encoders)}]; decoders=[{string.Join(",", _decoders)}]");
+
+        _metrics.SetIdentity(_workerId, _ffmpegVersion, string.Join(",", _hwAccels));
+        _metrics.SetCapacitySource(
+            () => _jobs.Count,
+            () => Math.Max(0, _maxConcurrent - _jobs.Count),
+            () => _maxConcurrent);
     }
 
     public async Task<int> RunAsync(CancellationToken cancellationToken)
@@ -209,7 +217,7 @@ public sealed class WorkerAgent
             return;
         }
 
-        var job = new FfmpegJob(assign, _ffmpegPath, _scratchRoot, _outbound.Writer, OnJobFinished);
+        var job = new FfmpegJob(assign, _ffmpegPath, _scratchRoot, _outbound.Writer, OnJobFinished, _metrics);
         if (!_jobs.TryAdd(assign.JobId, job))
         {
             _outbound.Writer.TryWrite(new WorkerFrame
@@ -220,6 +228,7 @@ public sealed class WorkerAgent
         }
 
         _outbound.Writer.TryWrite(new WorkerFrame { Accepted = new JobAccepted { JobId = assign.JobId, Accepted = true } });
+        _metrics.JobStarted();
 
         try
         {
@@ -230,6 +239,8 @@ public sealed class WorkerAgent
             Console.Error.WriteLine($"[worker] failed to start job {assign.JobId}: {ex.Message}");
             _outbound.Writer.TryWrite(new WorkerFrame { Exited = new JobExited { JobId = assign.JobId, ExitCode = -1 } });
             _jobs.TryRemove(assign.JobId, out _);
+            _metrics.RemoveJob(assign.JobId);
+            _metrics.JobFailed();
         }
     }
 
@@ -256,9 +267,19 @@ public sealed class WorkerAgent
         }
     }
 
-    private void OnJobFinished(string jobId)
+    private void OnJobFinished(string jobId, int exitCode)
     {
         _jobs.TryRemove(jobId, out _);
+        _metrics.RemoveJob(jobId);
+
+        if (exitCode == 0)
+        {
+            _metrics.JobCompleted();
+        }
+        else
+        {
+            _metrics.JobFailed();
+        }
     }
 
     private async Task WriteOutboundAsync(IClientStreamWriter<WorkerFrame> stream, CancellationToken cancellationToken)

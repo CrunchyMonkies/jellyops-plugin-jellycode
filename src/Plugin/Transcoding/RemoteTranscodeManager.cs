@@ -13,6 +13,7 @@ using System.Threading.Tasks;
 using Jellyfin.Data;
 using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Extensions;
+using Jellyfin.Plugin.DistributedTranscoding.Api;
 using Jellyfin.Plugin.DistributedTranscoding.Configuration;
 using Jellyfin.Plugin.DistributedTranscoding.Contracts;
 using Jellyfin.Plugin.DistributedTranscoding.Server;
@@ -45,7 +46,7 @@ namespace Jellyfin.Plugin.DistributedTranscoding.Transcoding;
 /// behavioural change is that kill/stop routes to a gRPC <c>JobControl{STOP}</c> instead of the core
 /// <c>TranscodingJob.Stop()</c> (which assumes a local Process and would NRE for remote jobs).
 /// </summary>
-public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink, IDisposable
+public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink, IActiveJobSource, IDisposable
 {
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<RemoteTranscodeManager> _logger;
@@ -1200,7 +1201,38 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
                 progress.PercentComplete > 0 ? progress.PercentComplete : null,
                 progress.BytesTranscoded > 0 ? progress.BytesTranscoded : null,
                 progress.Bitrate > 0 ? progress.Bitrate : null);
+
+            handle.Speed = progress.Speed;
         }
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyList<ActiveJobDto> SnapshotActiveJobs()
+    {
+        var result = new List<ActiveJobDto>();
+
+        foreach (var kvp in _remoteJobs)
+        {
+            var handle = kvp.Value;
+            var job = handle.Job;
+            if (job is null)
+            {
+                continue;
+            }
+
+            result.Add(new ActiveJobDto
+            {
+                JobId = kvp.Key,
+                WorkerId = handle.Worker?.WorkerId ?? string.Empty,
+                Framerate = job.Framerate ?? 0,
+                BitrateKbps = (job.BitRate ?? 0) / 1000f,
+                BytesTranscoded = job.BytesTranscoded ?? 0,
+                PercentComplete = job.CompletionPercentage ?? 0,
+                Speed = handle.Speed,
+            });
+        }
+
+        return result;
     }
 
     /// <inheritdoc />

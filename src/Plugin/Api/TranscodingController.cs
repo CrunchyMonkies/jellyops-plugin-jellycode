@@ -26,15 +26,22 @@ public class TranscodingController : ControllerBase
     private static readonly Lazy<(string Content, string ETag)> ScriptCache =
         new(LoadScriptFromResource, LazyThreadSafetyMode.ExecutionAndPublication);
 
+    // Chart.js UMD bundle served same-origin for the settings-page graph.
+    private static readonly Lazy<(byte[] Content, string ETag)> ChartJsCache =
+        new(LoadChartJsFromResource, LazyThreadSafetyMode.ExecutionAndPublication);
+
     private readonly WorkerRegistry _registry;
+    private readonly IActiveJobSource _jobSource;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="TranscodingController"/> class.
     /// </summary>
     /// <param name="registry">The shared worker registry singleton.</param>
-    public TranscodingController(WorkerRegistry registry)
+    /// <param name="jobSource">Provides active-job snapshots for the metrics endpoint.</param>
+    public TranscodingController(WorkerRegistry registry, IActiveJobSource jobSource)
     {
         _registry = registry;
+        _jobSource = jobSource;
     }
 
     /// <summary>
@@ -74,6 +81,86 @@ public class TranscodingController : ControllerBase
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(content));
         var etag = $"\"{Convert.ToBase64String(hash)[..16]}\"";
         return (content, etag);
+    }
+
+    private static (byte[] Content, string ETag) LoadChartJsFromResource()
+    {
+        var assembly = typeof(TranscodingController).Assembly;
+        const string ResourceName = "Jellyfin.Plugin.DistributedTranscoding.Web.chart.umd.min.js";
+        using var stream = assembly.GetManifestResourceStream(ResourceName)
+            ?? throw new InvalidOperationException($"Embedded resource '{ResourceName}' not found");
+        using var ms = new MemoryStream();
+        stream.CopyTo(ms);
+        var content = ms.ToArray();
+        var hash = SHA256.HashData(content);
+        var etag = $"\"{Convert.ToBase64String(hash)[..16]}\"";
+        return (content, etag);
+    }
+
+    /// <summary>
+    /// Returns aggregated transcode metrics for the settings-page graph.
+    /// </summary>
+    /// <returns>Cluster-wide and per-worker metrics.</returns>
+    [HttpGet("Metrics")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<MetricsDto> GetMetrics()
+    {
+        var workers = _registry.Snapshot();
+        var activeJobs = _jobSource.SnapshotActiveJobs();
+
+        var jobsByWorker = activeJobs
+            .GroupBy(j => j.WorkerId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+
+        var workerMetrics = workers
+            .Select(w =>
+            {
+                jobsByWorker.TryGetValue(w.WorkerId, out var jobs);
+                return new WorkerMetricsDto
+                {
+                    WorkerId = w.WorkerId,
+                    ActiveJobs = w.ActiveJobs,
+                    EncodeFps = jobs?.Sum(j => j.Framerate) ?? 0,
+                    BitrateKbps = jobs?.Sum(j => j.BitrateKbps) ?? 0,
+                };
+            })
+            .OrderBy(w => w.WorkerId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var dto = new MetricsDto
+        {
+            ActiveStreams = workers.Sum(w => w.ActiveJobs),
+            EncodeFps = activeJobs.Sum(j => j.Framerate),
+            ThroughputKbps = activeJobs.Sum(j => j.BitrateKbps),
+            AvgSpeed = activeJobs.Count > 0 ? activeJobs.Average(j => j.Speed) : 0,
+            Workers = workerMetrics,
+        };
+
+        return Ok(dto);
+    }
+
+    /// <summary>
+    /// Returns the vendored Chart.js UMD bundle. Served anonymously because the browser loads it
+    /// as a plain &lt;script src&gt; with no API auth header (same rationale as ClientScript).
+    /// </summary>
+    /// <returns>The Chart.js JavaScript bundle.</returns>
+    [HttpGet("ChartJs")]
+    [AllowAnonymous]
+    [Produces("text/javascript")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult GetChartJs()
+    {
+        var (content, etag) = ChartJsCache.Value;
+
+        var requestETag = Request.Headers.IfNoneMatch.FirstOrDefault();
+        if (!string.IsNullOrEmpty(requestETag) && requestETag == etag)
+        {
+            return StatusCode(StatusCodes.Status304NotModified);
+        }
+
+        Response.Headers.CacheControl = "public, max-age=3600";
+        Response.Headers.ETag = etag;
+        return File(content, "text/javascript");
     }
 
     /// <summary>
@@ -190,4 +277,70 @@ public class TypeCapabilitiesDto
 
     /// <summary>Gets or sets the union of advertised video decoders.</summary>
     public IReadOnlyList<string> Decoders { get; set; } = Array.Empty<string>();
+}
+
+/// <summary>
+/// Snapshot of a single active transcode job for the metrics API.
+/// </summary>
+public class ActiveJobDto
+{
+    /// <summary>Gets or sets the job identifier.</summary>
+    public string JobId { get; set; } = string.Empty;
+
+    /// <summary>Gets or sets the worker handling this job.</summary>
+    public string WorkerId { get; set; } = string.Empty;
+
+    /// <summary>Gets or sets the current encode framerate.</summary>
+    public float Framerate { get; set; }
+
+    /// <summary>Gets or sets the current bitrate in kbps.</summary>
+    public float BitrateKbps { get; set; }
+
+    /// <summary>Gets or sets the total bytes transcoded so far.</summary>
+    public long BytesTranscoded { get; set; }
+
+    /// <summary>Gets or sets the completion percentage (0-100).</summary>
+    public double PercentComplete { get; set; }
+
+    /// <summary>Gets or sets the encode speed as a multiple of realtime.</summary>
+    public float Speed { get; set; }
+}
+
+/// <summary>
+/// Aggregated cluster-wide transcode metrics returned by the Metrics endpoint.
+/// </summary>
+public class MetricsDto
+{
+    /// <summary>Gets or sets the total number of active transcode streams.</summary>
+    public int ActiveStreams { get; set; }
+
+    /// <summary>Gets or sets the total encode framerate across all jobs (fps).</summary>
+    public float EncodeFps { get; set; }
+
+    /// <summary>Gets or sets the total throughput across all jobs (kbps).</summary>
+    public float ThroughputKbps { get; set; }
+
+    /// <summary>Gets or sets the average encode speed (multiple of realtime).</summary>
+    public float AvgSpeed { get; set; }
+
+    /// <summary>Gets or sets per-worker metrics.</summary>
+    public IReadOnlyList<WorkerMetricsDto> Workers { get; set; } = Array.Empty<WorkerMetricsDto>();
+}
+
+/// <summary>
+/// Per-worker metrics within a <see cref="MetricsDto"/>.
+/// </summary>
+public class WorkerMetricsDto
+{
+    /// <summary>Gets or sets the worker identifier.</summary>
+    public string WorkerId { get; set; } = string.Empty;
+
+    /// <summary>Gets or sets the number of active jobs on this worker.</summary>
+    public int ActiveJobs { get; set; }
+
+    /// <summary>Gets or sets the aggregate encode framerate for this worker (fps).</summary>
+    public float EncodeFps { get; set; }
+
+    /// <summary>Gets or sets the aggregate bitrate for this worker (kbps).</summary>
+    public float BitrateKbps { get; set; }
 }

@@ -25,7 +25,9 @@ RUN chmod +x /worker-entrypoint.sh
 ENV DT_SERVER=http://jellyfin:9090 \
     DT_WORKER_ID= \
     DT_MAX_CONCURRENT=2 \
-    DT_SCRATCH=/tmp/worker
+    DT_SCRATCH=/tmp/worker \
+    DT_METRICS_PORT=9091
+EXPOSE 9091
 ENTRYPOINT ["/worker-entrypoint.sh"]
 
 # ---- cpu: software encoding via distro ffmpeg ----

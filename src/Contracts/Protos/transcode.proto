@@ -61,6 +61,7 @@ message Progress {
   double percent_complete = 4;
   int64  bytes_transcoded = 5;
   int32  bitrate = 6;
+  float  speed = 7; // ffmpeg encode speed as a multiple of realtime (from "speed=" progress)
 }
 
 message JobExited {

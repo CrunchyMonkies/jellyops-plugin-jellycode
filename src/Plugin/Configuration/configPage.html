@@ -22,6 +22,7 @@
                             <button type="button" is="emby-button" class="dt-tab raised" data-target="dtTab-routing">Routing</button>
                             <button type="button" is="emby-button" class="dt-tab raised" data-target="dtTab-encoding">Transcoding defaults</button>
                             <button type="button" is="emby-button" class="dt-tab raised" data-target="dtTab-mesh">Mesh</button>
+                            <button type="button" is="emby-button" class="dt-tab raised" data-target="dtTab-metrics">Metrics</button>
                         </div>
                     </div>
 
@@ -124,6 +125,19 @@
                             <label class="inputLabel inputLabelUnfocused" for="dtFirstSegmentTimeout">First-segment timeout (seconds)</label>
                             <input id="dtFirstSegmentTimeout" type="number" min="1" class="emby-input" />
                         </div>
+                    </div>
+
+                    <!-- ===== Tab: Metrics ===== -->
+                    <div id="dtTab-metrics" class="dt-panel verticalSection" style="display:none;">
+                        <h3 class="sectionTitle">Live transcode metrics</h3>
+                        <div class="fieldDescription" style="margin-bottom:0.5em;">
+                            Real-time view of cluster-wide transcode performance. The chart plots the
+                            last five minutes of samples (polled every 5 seconds).
+                        </div>
+                        <div style="overflow-x:auto;">
+                            <canvas id="dtMetricsChart" height="220" style="width:100%;max-width:100%;"></canvas>
+                        </div>
+                        <div id="dtMetricsLegend" style="margin-top:0.4em;font-size:0.85em;opacity:0.8;"></div>
                     </div>
 
                     <button is="emby-button" type="submit" class="raised button-submit block emby-button" style="margin-top:1em;">
@@ -426,6 +440,81 @@
                 return enc;
             }
 
+            // ---------- Metrics chart ----------
+            var MAX_SAMPLES = 60;
+            var chartJsLoaded = false;
+            var chartJsLoading = false;
+
+            function ensureChartJs() {
+                if (chartJsLoaded || chartJsLoading) { return; }
+                if (window.Chart) { chartJsLoaded = true; return; }
+                chartJsLoading = true;
+                var s = document.createElement('script');
+                s.src = ApiClient.getUrl('DistributedTranscoding/ChartJs');
+                s.onload = function () { chartJsLoaded = true; chartJsLoading = false; };
+                s.onerror = function () { chartJsLoading = false; };
+                document.head.appendChild(s);
+            }
+
+            function initChart(page) {
+                if (!chartJsLoaded || !window.Chart) { return null; }
+                var canvas = el('#dtMetricsChart', page);
+                if (!canvas) { return null; }
+                return new Chart(canvas.getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [
+                            { label: 'Active streams', data: [], borderColor: '#4caf50', backgroundColor: 'rgba(76,175,80,0.1)', yAxisID: 'y', tension: 0.2, pointRadius: 0 },
+                            { label: 'Encode FPS', data: [], borderColor: '#2196f3', backgroundColor: 'rgba(33,150,243,0.1)', yAxisID: 'y', tension: 0.2, pointRadius: 0 },
+                            { label: 'Throughput (kbps)', data: [], borderColor: '#ff9800', backgroundColor: 'rgba(255,152,0,0.1)', yAxisID: 'y1', tension: 0.2, pointRadius: 0 },
+                            { label: 'Avg speed', data: [], borderColor: '#9c27b0', backgroundColor: 'rgba(156,39,176,0.1)', yAxisID: 'y', tension: 0.2, pointRadius: 0 }
+                        ]
+                    },
+                    options: {
+                        animation: false,
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { mode: 'index', intersect: false },
+                        scales: {
+                            x: { display: true, ticks: { maxTicksLimit: 10 } },
+                            y: { type: 'linear', display: true, position: 'left', beginAtZero: true, title: { display: true, text: 'Streams / FPS / Speed' } },
+                            y1: { type: 'linear', display: true, position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, title: { display: true, text: 'kbps' } }
+                        },
+                        plugins: { legend: { display: true, position: 'bottom' } }
+                    }
+                });
+            }
+
+            function pushMetricsSample(page, metrics) {
+                if (!page._dtChart) {
+                    page._dtChart = initChart(page);
+                }
+                var chart = page._dtChart;
+                if (!chart) { return; }
+
+                var now = new Date().toLocaleTimeString();
+                var ds = chart.data.datasets;
+                chart.data.labels.push(now);
+                ds[0].data.push(metrics.ActiveStreams);
+                ds[1].data.push(Math.round(metrics.EncodeFps * 10) / 10);
+                ds[2].data.push(Math.round(metrics.ThroughputKbps * 10) / 10);
+                ds[3].data.push(Math.round(metrics.AvgSpeed * 100) / 100);
+
+                if (chart.data.labels.length > MAX_SAMPLES) {
+                    chart.data.labels.shift();
+                    for (var i = 0; i < ds.length; i++) { ds[i].data.shift(); }
+                }
+
+                chart.update('none');
+            }
+
+            function fetchMetrics(page) {
+                return ApiClient.fetch({ url: ApiClient.getUrl('DistributedTranscoding/Metrics'), dataType: 'json' })
+                    .then(function (m) { pushMetricsSample(page, m); })
+                    .catch(function () { });
+            }
+
             // ---------- Load / save ----------
             function load(page) {
                 Dashboard.showLoadingMsg();
@@ -486,10 +575,15 @@
                 var self = this;
                 showTab(self, 'dtTab-workers');
                 load(self);
-                self._dtPoll = setInterval(function () { fetchWorkers(self); }, 5000);
+                ensureChartJs();
+                self._dtPoll = setInterval(function () {
+                    fetchWorkers(self);
+                    if (chartJsLoaded) { fetchMetrics(self); }
+                }, 5000);
             });
             page.addEventListener('pagehide', function () {
                 if (this._dtPoll) { clearInterval(this._dtPoll); this._dtPoll = null; }
+                if (this._dtChart) { this._dtChart.destroy(); this._dtChart = null; }
             });
             el('#dtConfigForm', page).addEventListener('submit', function (e) {
                 save(page); e.preventDefault(); return false;
