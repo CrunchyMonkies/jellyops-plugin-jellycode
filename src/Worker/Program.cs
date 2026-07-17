@@ -38,11 +38,15 @@ public static class Program
 
         using var metrics = new WorkerMetrics();
 
+        // The metrics endpoint is strictly best-effort: it must NEVER block or crash the worker.
+        // Start it off the critical path (fire-and-forget) so a slow or hung Kestrel start — observed
+        // on some hardware ffmpeg images — cannot prevent the worker from probing ffmpeg and
+        // registering with the mesh. A startup timeout bounds the diagnostic wait.
         MetricsHost? metricsHost = null;
         if (metricsPort != 0)
         {
             metricsHost = new MetricsHost(metricsPort);
-            await metricsHost.StartAsync(cts.Token).ConfigureAwait(false);
+            _ = StartMetricsBestEffortAsync(metricsHost, cts.Token);
         }
 
         try
@@ -54,8 +58,29 @@ public static class Program
         {
             if (metricsHost is not null)
             {
-                await metricsHost.StopAsync().ConfigureAwait(false);
+                try
+                {
+                    await metricsHost.StopAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[worker] metrics host stop failed: {ex.Message}");
+                }
             }
+        }
+    }
+
+    private static async Task StartMetricsBestEffortAsync(MetricsHost host, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var startCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            startCts.CancelAfter(TimeSpan.FromSeconds(20));
+            await host.StartAsync(startCts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[worker] metrics host failed to start (continuing without metrics): {ex.Message}");
         }
     }
 

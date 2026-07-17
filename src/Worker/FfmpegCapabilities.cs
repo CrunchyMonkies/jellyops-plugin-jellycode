@@ -263,10 +263,26 @@ public sealed record FfmpegCapabilities(
                 },
             };
             process.Start();
-            // ffmpeg prints -encoders/-version to stdout; merge stderr defensively.
-            var stdout = process.StandardOutput.ReadToEnd();
-            var stderr = process.StandardError.ReadToEnd();
-            process.WaitForExit(10_000);
+            // Drain both pipes concurrently: reading stdout fully before stderr can deadlock when
+            // the child fills the stderr pipe buffer before stdout reaches EOF (and vice versa).
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(10_000))
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // process already exited between the wait and the kill
+                }
+
+                process.WaitForExit(2_000);
+            }
+
+            var stdout = stdoutTask.GetAwaiter().GetResult();
+            var stderr = stderrTask.GetAwaiter().GetResult();
             return string.IsNullOrWhiteSpace(stdout) ? stderr : stdout;
         }
         catch (Exception ex)

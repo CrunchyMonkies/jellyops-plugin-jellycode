@@ -24,6 +24,7 @@ public sealed class MetricsHost
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        Console.WriteLine($"[worker] metrics: building host on port {_port}...");
         var builder = WebApplication.CreateSlimBuilder();
 
         builder.Services.AddOpenTelemetry()
@@ -39,6 +40,7 @@ public sealed class MetricsHost
         app.MapGet("/readyz", () => Results.Ok("ok"));
 
         _app = app;
+        Console.WriteLine($"[worker] metrics: starting Kestrel on 0.0.0.0:{_port}...");
         await app.StartAsync(cancellationToken).ConfigureAwait(false);
 
         Console.WriteLine($"[worker] metrics listening on http://0.0.0.0:{_port}/metrics");
