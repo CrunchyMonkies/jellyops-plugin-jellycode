@@ -76,7 +76,9 @@ public static class Program
         {
             using var startCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             startCts.CancelAfter(TimeSpan.FromSeconds(20));
-            await host.StartAsync(startCts.Token).ConfigureAwait(false);
+            // Offload to a thread-pool thread: the endpoint's synchronous bind must never run on
+            // the caller's stack, so it can never stall worker startup / mesh registration.
+            await Task.Run(() => host.StartAsync(startCts.Token), startCts.Token).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

@@ -1,58 +1,51 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.DependencyInjection;
+using OpenTelemetry;
 using OpenTelemetry.Metrics;
 
 namespace Jellyfin.Plugin.DistributedTranscoding.Worker;
 
 /// <summary>
-/// Hosts a minimal Kestrel HTTP/1.1 server exposing <c>/metrics</c> (Prometheus scrape),
-/// <c>/healthz</c>, and <c>/readyz</c>. Separate from the gRPC h2c channel.
+/// Serves the Prometheus <c>/metrics</c> scrape endpoint from a minimal
+/// <see cref="System.Net.HttpListener"/> via OpenTelemetry's Prometheus HttpListener exporter.
+/// Deliberately avoids the ASP.NET/Kestrel host: its startup could hang on worker nodes with
+/// flaky DNS (host/hostname bootstrap), which previously blocked the worker from registering.
+/// Separate from the gRPC h2c channel.
 /// </summary>
 public sealed class MetricsHost
 {
     private readonly int _port;
-    private WebApplication? _app;
+    private MeterProvider? _provider;
 
     public MetricsHost(int port)
     {
         _port = port;
     }
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    public Task StartAsync(CancellationToken cancellationToken)
     {
-        Console.WriteLine($"[worker] metrics: building host on port {_port}...");
-        var builder = WebApplication.CreateSlimBuilder();
-
-        builder.Services.AddOpenTelemetry()
-            .WithMetrics(m => m
-                .AddMeter(WorkerMetrics.MeterName)
-                .AddPrometheusExporter());
-
-        var app = builder.Build();
-
-        app.Urls.Add($"http://0.0.0.0:{_port}");
-        app.MapPrometheusScrapingEndpoint("/metrics");
-        app.MapGet("/healthz", () => Results.Ok("ok"));
-        app.MapGet("/readyz", () => Results.Ok("ok"));
-
-        _app = app;
-        Console.WriteLine($"[worker] metrics: starting Kestrel on 0.0.0.0:{_port}...");
-        await app.StartAsync(cancellationToken).ConfigureAwait(false);
-
+        Console.WriteLine($"[worker] metrics: starting Prometheus HttpListener on 0.0.0.0:{_port}...");
+        _provider = Sdk.CreateMeterProviderBuilder()
+            .AddMeter(WorkerMetrics.MeterName)
+            .AddPrometheusHttpListener(options =>
+            {
+                options.ScrapeEndpointPath = "/metrics";
+                options.ConfigureHttpListener = (_, listener) =>
+                {
+                    listener.Prefixes.Clear();
+                    listener.Prefixes.Add($"http://+:{_port}/");
+                };
+            })
+            .Build();
         Console.WriteLine($"[worker] metrics listening on http://0.0.0.0:{_port}/metrics");
+        return Task.CompletedTask;
     }
 
-    public async Task StopAsync()
+    public Task StopAsync()
     {
-        if (_app is not null)
-        {
-            await _app.StopAsync().ConfigureAwait(false);
-            await _app.DisposeAsync().ConfigureAwait(false);
-            _app = null;
-        }
+        _provider?.Dispose();
+        _provider = null;
+        return Task.CompletedTask;
     }
 }
