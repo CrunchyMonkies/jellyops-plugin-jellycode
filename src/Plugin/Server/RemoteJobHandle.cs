@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using MediaBrowser.Controller.MediaEncoding;
@@ -14,8 +13,8 @@ namespace Jellyfin.Plugin.DistributedTranscoding.Server;
 /// </summary>
 public sealed class RemoteJobHandle : IDisposable
 {
-    private readonly object _lock = new();
-    private readonly Dictionary<string, FileStream> _open = new(StringComparer.Ordinal);
+    private readonly object _logLock = new();
+    private readonly SegmentFileWriter _writer;
 
     public RemoteJobHandle(string jobId, WorkerConnection worker, string outputDir, string playlistPath, TranscodingJob job, StreamState state, Stream logStream)
     {
@@ -26,6 +25,7 @@ public sealed class RemoteJobHandle : IDisposable
         Job = job;
         State = state;
         LogStream = logStream;
+        _writer = new SegmentFileWriter(outputDir);
     }
 
     public string JobId { get; }
@@ -49,47 +49,7 @@ public sealed class RemoteJobHandle : IDisposable
     /// the canonical path the controller polls.
     /// </summary>
     public void WriteSegment(string relPath, ReadOnlyMemory<byte> chunk, bool eof)
-    {
-        var finalPath = Path.GetFullPath(Path.Combine(OutputDir, relPath));
-        var tempPath = finalPath + ".part";
-
-        lock (_lock)
-        {
-            if (!_open.TryGetValue(relPath, out var stream))
-            {
-                stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None);
-                _open[relPath] = stream;
-            }
-
-            if (!chunk.IsEmpty)
-            {
-                stream.Write(chunk.Span);
-            }
-
-            if (eof)
-            {
-                stream.Flush();
-                stream.Dispose();
-                _open.Remove(relPath);
-
-                var isPlaylist = relPath.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase);
-                Promote(tempPath, finalPath, overwrite: isPlaylist);
-            }
-        }
-    }
-
-    private static void Promote(string tempPath, string finalPath, bool overwrite)
-    {
-        try
-        {
-            File.Move(tempPath, finalPath, overwrite);
-        }
-        catch (IOException) when (!overwrite && File.Exists(finalPath))
-        {
-            // Segment already present (duplicate send) — discard the temp.
-            TryDelete(tempPath);
-        }
-    }
+        => _writer.Write(relPath, chunk, eof);
 
     /// <summary>
     /// Appends a forwarded ffmpeg stderr line to the server-side log file.
@@ -97,7 +57,7 @@ public sealed class RemoteJobHandle : IDisposable
     public void AppendLog(string line)
     {
         var bytes = System.Text.Encoding.UTF8.GetBytes(line + Environment.NewLine);
-        lock (_lock)
+        lock (_logLock)
         {
             try
             {
@@ -113,34 +73,9 @@ public sealed class RemoteJobHandle : IDisposable
         }
     }
 
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            File.Delete(path);
-        }
-        catch (IOException)
-        {
-        }
-    }
-
     public void Dispose()
     {
-        lock (_lock)
-        {
-            foreach (var stream in _open.Values)
-            {
-                try
-                {
-                    stream.Dispose();
-                }
-                catch (IOException)
-                {
-                }
-            }
-
-            _open.Clear();
-        }
+        _writer.Dispose();
 
         try
         {

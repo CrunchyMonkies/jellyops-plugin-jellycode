@@ -23,6 +23,13 @@ public class PluginConfiguration : BasePluginConfiguration
     public int FirstSegmentTimeoutSeconds { get; set; } = 60;
 
     /// <summary>
+    /// Gets or sets a value indicating whether trickplay image extraction is offloaded to remote workers.
+    /// When enabled (default), trickplay ffmpeg passes run on a worker; if no worker is available or the
+    /// remote job fails, extraction falls back to the local server so trickplay never regresses.
+    /// </summary>
+    public bool OffloadTrickplay { get; set; } = true;
+
+    /// <summary>
     /// Gets or sets the per-worker-type transcoding options (cpu / intel / nvidia). Defaults leave
     /// the pipeline unchanged; operators can override codec/encoder/preset/quality/bitrate/etc. per
     /// type from the plugin settings page.

@@ -62,6 +62,7 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
 
     private readonly List<TranscodingJob> _activeTranscodingJobs = new();
     private readonly ConcurrentDictionary<string, RemoteJobHandle> _remoteJobs = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, BatchJobHandle> _batchJobs = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _transcodingLocks = new(StringComparer.Ordinal);
 
     public RemoteTranscodeManager(
@@ -1018,6 +1019,120 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
         }
     }
 
+    /// <summary>
+    /// Runs a one-shot batch ffmpeg job (e.g. trickplay frame extraction) on a remote worker and waits for
+    /// it to finish. The worker runs <paramref name="arguments"/> writing to its local scratch dir and
+    /// streams every produced file back to <paramref name="outputDir"/> on the server; this method returns
+    /// once the worker reports the process exited. Unlike <see cref="StartFfMpeg"/> it awaits full completion
+    /// rather than the first segment, and it has no playback session / <c>StreamState</c>.
+    /// </summary>
+    /// <param name="arguments">The ffmpeg argument string (output paths must reference <paramref name="outputDir"/>).</param>
+    /// <param name="outputDir">Server-side directory the produced files are reassembled into.</param>
+    /// <param name="requiredEncoder">The video encoder the args use (e.g. "mjpeg", "mjpeg_vaapi"); used for worker capability routing.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns><c>true</c> if a worker ran the job to a zero exit code; <c>false</c> if no worker was available (caller should fall back to local).</returns>
+    /// <exception cref="FfmpegException">A worker ran the job but ffmpeg exited non-zero.</exception>
+    public async Task<bool> ExtractImagesRemoteAsync(string arguments, string outputDir, string requiredEncoder, CancellationToken cancellationToken)
+    {
+        var timeout = TimeSpan.FromSeconds(Config.FirstSegmentTimeoutSeconds);
+
+        // Software mjpeg is available on any ffmpeg worker; a hardware encoder needs a worker that advertises it.
+        var isSoftware = string.Equals(requiredEncoder, "mjpeg", StringComparison.OrdinalIgnoreCase);
+        Func<WorkerConnection, bool> predicate = isSoftware
+            ? (_ => true)
+            : (w => w.Encoders.Any(e => string.Equals(e, requiredEncoder, StringComparison.OrdinalIgnoreCase)));
+
+        var excluded = new HashSet<string>(StringComparer.Ordinal);
+        const int MaxAttempts = 8;
+
+        for (int attempt = 1; attempt <= MaxAttempts; attempt++)
+        {
+            WorkerConnection worker;
+            try
+            {
+                worker = await _registry.GetWorkerAsync(timeout, predicate, excluded, cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // No capable worker — let the caller fall back to local extraction.
+                return false;
+            }
+
+            var jobId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+            var handle = new BatchJobHandle(jobId, worker, outputDir);
+            _batchJobs[jobId] = handle;
+
+            var assign = new AssignJob
+            {
+                JobId = jobId,
+                EncoderPath = _mediaEncoder.EncoderPath,
+                Arguments = arguments,
+                Type = JobType.Progressive,
+                OutputDir = outputDir,
+                PathMap = new PathMap()
+            };
+            assign.OutputGlobs.Add("*.jpg");
+
+            _logger.LogInformation(
+                "Assigning remote batch job {JobId} to worker {WorkerId} (attempt {Attempt}, encoder {Encoder})",
+                jobId, worker.WorkerId, attempt, requiredEncoder);
+
+            worker.TrySend(new ServerFrame { Assign = assign });
+            worker.FreeSlots = Math.Max(0, worker.FreeSlots - 1); // optimistic; corrected by heartbeat
+
+            bool accepted;
+            try
+            {
+                using var acceptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                acceptCts.CancelAfter(timeout);
+                accepted = await handle.AcceptedTcs.Task.WaitAsync(acceptCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                _batchJobs.TryRemove(jobId, out _);
+                handle.Dispose();
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Remote batch job {JobId} accept timed out from worker {WorkerId}", jobId, worker.WorkerId);
+                accepted = false;
+            }
+
+            if (!accepted)
+            {
+                _batchJobs.TryRemove(jobId, out _);
+                handle.Dispose();
+                worker.FreeSlots = Math.Min(worker.MaxConcurrent, worker.FreeSlots + 1);
+                excluded.Add(worker.WorkerId);
+                continue;
+            }
+
+            // Accepted — wait for the worker to finish extracting every frame. JobExited is the last frame
+            // on the ordered stream, so by the time ExitedTcs completes all files are on disk in outputDir.
+            int exitCode;
+            try
+            {
+                exitCode = await handle.ExitedTcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _batchJobs.TryRemove(jobId, out _);
+                handle.Dispose();
+            }
+
+            if (exitCode != 0)
+            {
+                throw new FfmpegException(string.Format(CultureInfo.InvariantCulture, "Remote batch job {0} failed with exit code {1}.", jobId, exitCode));
+            }
+
+            return true;
+        }
+
+        // Every attempt was rejected.
+        return false;
+    }
+
     // ----------------------------------------------------------------------------------------------
     // IRemoteFrameSink — worker -> server frames
     // ----------------------------------------------------------------------------------------------
@@ -1025,13 +1140,19 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
     /// <inheritdoc />
     public void OnJobAccepted(string jobId, bool accepted, string? reason)
     {
-        if (!_remoteJobs.TryGetValue(jobId, out var handle))
+        if (_remoteJobs.TryGetValue(jobId, out var handle))
+        {
+            handle.AcceptedTcs.TrySetResult(accepted);
+        }
+        else if (_batchJobs.TryGetValue(jobId, out var batch))
+        {
+            batch.AcceptedTcs.TrySetResult(accepted);
+        }
+        else
         {
             // Handle was already cleaned up (previous attempt in the retry loop).
             return;
         }
-
-        handle.AcceptedTcs.TrySetResult(accepted);
 
         if (!accepted)
         {
@@ -1051,6 +1172,17 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
             catch (IOException ex)
             {
                 _logger.LogError(ex, "Error writing segment {RelPath} for job {JobId}", relPath, jobId);
+            }
+        }
+        else if (_batchJobs.TryGetValue(jobId, out var batch))
+        {
+            try
+            {
+                batch.WriteSegment(relPath, chunk, eof);
+            }
+            catch (IOException ex)
+            {
+                _logger.LogError(ex, "Error writing batch output {RelPath} for job {JobId}", relPath, jobId);
             }
         }
     }
@@ -1085,6 +1217,24 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
     {
         if (!_remoteJobs.TryRemove(jobId, out var handle))
         {
+            if (_batchJobs.TryGetValue(jobId, out var batch))
+            {
+                // One-shot batch job (e.g. trickplay). Leave it in the registry so any trailing
+                // SegmentData already delivered on the ordered stream is written; ExtractImagesRemoteAsync
+                // removes and disposes it once ExitedTcs completes.
+                batch.AcceptedTcs.TrySetResult(false); // no-op if already accepted
+                batch.ExitedTcs.TrySetResult(exitCode);
+
+                if (exitCode == 0)
+                {
+                    _logger.LogInformation("Remote batch job {JobId} exited with code 0", jobId);
+                }
+                else
+                {
+                    _logger.LogError("Remote batch job {JobId} exited with code {ExitCode}", jobId, exitCode);
+                }
+            }
+
             return;
         }
 
@@ -1121,6 +1271,12 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
         foreach (var jobId in _remoteJobs.Where(kv => ReferenceEquals(kv.Value.Worker, worker)).Select(kv => kv.Key).ToArray())
         {
             _logger.LogWarning("Worker {WorkerId} lost; failing job {JobId}", worker.WorkerId, jobId);
+            OnJobExited(jobId, -1);
+        }
+
+        foreach (var jobId in _batchJobs.Where(kv => ReferenceEquals(kv.Value.Worker, worker)).Select(kv => kv.Key).ToArray())
+        {
+            _logger.LogWarning("Worker {WorkerId} lost; failing batch job {JobId}", worker.WorkerId, jobId);
             OnJobExited(jobId, -1);
         }
     }
