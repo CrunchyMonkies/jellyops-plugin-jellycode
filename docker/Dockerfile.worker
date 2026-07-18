@@ -30,16 +30,11 @@ ENV DT_SERVER=http://jellyfin:9090 \
 EXPOSE 9091
 ENTRYPOINT ["/worker-entrypoint.sh"]
 
-# ---- cpu: software encoding via distro ffmpeg ----
-FROM runtime-base AS cpu
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-ENV DT_FFMPEG=/usr/bin/ffmpeg
-
 # ---- jellyfin-ffmpeg base (VAAPI + QSV + NVENC + bundled Intel iHD driver) ----
-# Shared by the intel and nvidia variants. The apt suite is derived from the base image's own
-# codename so it tracks the .NET base OS (Ubuntu noble today).
+# Shared by ALL variants (cpu/intel/nvidia) so every worker's ffmpeg matches the capabilities the
+# Jellyfin server's arg-builder assumes — in particular libfdk_aac and the full jellyfin filter set.
+# (Distro ffmpeg lacks libfdk_aac, which breaks HLS jobs that transcode audio to AAC with exit 8.)
+# The apt suite is derived from the base image's own codename so it tracks the .NET base OS.
 FROM runtime-base AS jellyfin-ffmpeg
 # jellyfin-ffmpeg major version (jellyfin-ffmpeg7 | jellyfin-ffmpeg8). ffmpeg8 ships a newer
 # oneVPL/driver stack with better support for the latest Intel Arc/Xe (Battlemage) GPUs.
@@ -56,6 +51,11 @@ RUN apt-get update \
     && apt-get purge -y curl gnupg && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 ENV DT_FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg
+
+# ---- cpu: software encoding (no GPU) via jellyfin-ffmpeg ----
+# Uses jellyfin-ffmpeg (inherited DT_FFMPEG) rather than distro ffmpeg so overflow HLS jobs routed
+# here have the same encoders/filters (incl. libfdk_aac) the server generated the command for.
+FROM jellyfin-ffmpeg AS cpu
 
 # ---- intel: VAAPI (Intel iGPU / Arc / Xe) ----
 # DT_FFMPEG points at a wrapper that completes the VAAPI device setup the (deviceless) Jellyfin
