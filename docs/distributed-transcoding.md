@@ -219,6 +219,7 @@ The server therefore needs a usable `ffmpeg`/`ffprobe` for probing even though i
 
 ## Required infrastructure assumptions
 
+- **Non-root containers.** Containers run as uid/gid `1000` by default (configurable via CRD `podSecurity`). Requires `fsGroup` on scratch and config volumes and the render device group for VAAPI; see [Running as non-root](../README.md#running-as-non-root) in the README.
 - **Source media access on workers.** ffmpeg on the pod must *read the source file*. The arg string's
   input path must resolve on the worker. Realistic approach: mount the **media library read-only on all
   worker pods at the same path** as the server (or provide a `PathMap` the worker applies). Streaming the

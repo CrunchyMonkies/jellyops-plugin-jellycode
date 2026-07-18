@@ -33,6 +33,12 @@ public sealed class BatchJobHandle : IDisposable
     /// <summary>Completes with the ffmpeg exit code once the worker signals the job has exited.</summary>
     public TaskCompletionSource<int> ExitedTcs { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    public float Framerate { get; set; }
+
+    public double PercentComplete { get; set; }
+
+    public float Speed { get; set; }
+
     /// <summary>
     /// Appends a streamed chunk to a temp file; on eof atomically promotes it to the canonical path
     /// inside <see cref="OutputDir"/>, so the caller only ever enumerates complete files.

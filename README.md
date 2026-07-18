@@ -221,6 +221,102 @@ resources:
 Requires the NVIDIA container runtime (`runtimeClassName: nvidia` or the node default) so the driver libs are
 injected. Then set Jellyfin → Playback → **NVENC**. NVENC needs no `-init_hw_device`, so no wrapper is used.
 
+## Running as non-root
+
+All images default to **root (uid 0)** — no `USER` directive in any `Dockerfile`. Non-root requires
+explicit configuration by the deployer. The **JellyOps operator now hardens every pod by default**: it applies
+`runAsNonRoot: true`, `runAsUser`/`runAsGroup`/`fsGroup` default to `1000` (configurable), drops all
+capabilities, disables privilege escalation, and enforces `RuntimeDefault` seccomp. Override this per-instance
+via a new CRD `podSecurity` block.
+
+Running non-root requires the following to work:
+
+| Requirement | Solution |
+|---|---|
+| **Scratch writable** (ffmpeg output to `/tmp/worker`) | Set `fsGroup: 1000` (or your configured gid); an `emptyDir` is root-owned unless `fsGroup` makes it group-writable. The entrypoint does `mkdir -p "$DT_SCRATCH"` automatically. |
+| **Config PVC writable** (Jellyfin writes `/config`) | Set `fsGroup: 1000` so the mounted PVC is group-writable. |
+| **Media readable** (ffmpeg reads source) | Media must be world-readable (`0755`) or owned by a group that includes uid 1000. Typically satisfied by mounting a shared media PVC (read-only). |
+| **VAAPI device access** (Intel GPU) | The render device (e.g. `/dev/dri/renderD128`) is owned by a specific group on the node. Add that group to `podSecurity.supplementalGroups`. Find the gid with `stat -c '%g' /dev/dri/renderD128` on a GPU node. Without it, VAAPI fails and falls back to software. |
+| **NVENC device access** (NVIDIA GPU) | The nvidia image sets `NVIDIA_DRIVER_CAPABILITIES=compute,video,utility` and the nvidia runtime injects the driver libraries. Non-root NVENC typically works without additional groups. |
+
+### Kubernetes (JellyOps)
+
+```yaml
+---
+apiVersion: jellyfin.jellyfin.io/v1alpha1
+kind: Jellyfin
+metadata:
+  name: my-jellyfin
+spec:
+  image:
+    reference: harbor.bne1.ouchi.com.au/applications/jellyfin-server:12.0.0
+  podSecurity:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+---
+apiVersion: jellyfin.jellyfin.io/v1alpha1
+kind: JellyfinPlugin
+metadata:
+  name: my-jellyfin-worker
+spec:
+  jellyfin: my-jellyfin
+  type: worker
+  image:
+    reference: ghcr.io/crunchymonkies/jellyops-plugin-jellycode/worker:intel
+  resources:
+    limits:
+      gpu.intel.com/xe: "1"
+  podSecurity:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    supplementalGroups: [109]  # render group — verify on your GPU node
+```
+
+> **VAAPI specifics:** the render device group is node-specific. On each Intel GPU node, run `stat -c '%g'
+> /dev/dri/renderD*` and note the gid (often `109` or `44`). Ensure the node's udev rules or device plugin
+> (e.g. intel-device-plugin-operator) grant that group (or uid 1000) access. Without it, `vaapi-ffmpeg-wrap.sh`
+> fails to open the device and falls back to software encoding.
+
+### Docker (non-Kubernetes)
+
+```bash
+# Find the render group gid on your GPU node (for VAAPI only)
+GID=$(stat -c '%g' /dev/dri/renderD128)
+
+# Run server
+docker run -d --name jellyfin-server \
+  -p 8096:8096 \
+  -v config:/config \
+  -v media:/media:ro \
+  --user 1000:1000 \
+  harbor.bne1.ouchi.com.au/applications/jellyfin-distributed-server:latest
+
+# Run intel worker with render group access
+docker run -d --name jellyfin-worker \
+  -e DT_SERVER=http://jellyfin-server:9090 \
+  -e DT_SCRATCH=/tmp/worker \
+  -v media:/media:ro \
+  --user 1000:1000 \
+  --group-add "$GID" \
+  --device /dev/dri/renderD128 \
+  ghcr.io/crunchymonkies/jellyops-plugin-jellycode/worker:intel
+
+# Run nvidia worker (no render group needed; nvidia runtime handles it)
+docker run -d --name jellyfin-worker-gpu \
+  -e DT_SERVER=http://jellyfin-server:9090 \
+  -v media:/media:ro \
+  --user 1000:1000 \
+  --gpus all \
+  --runtime nvidia \
+  ghcr.io/crunchymonkies/jellyops-plugin-jellycode/worker:nvidia
+```
+
+> **Scratch directory:** ensure the host's `/tmp/worker` (or whatever `DT_SCRATCH` points to) is writable by
+> uid 1000, or mount an `emptyDir`-like volume. The worker writes ffmpeg segments there and streams them
+> back over gRPC; the directory may be on a tmpfs for performance.
+
 ## Run against a real Jellyfin
 
 1. **Deploy the plugin:**

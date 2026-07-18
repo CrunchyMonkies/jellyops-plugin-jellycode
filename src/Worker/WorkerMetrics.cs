@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics.Metrics;
+using Jellyfin.Plugin.DistributedTranscoding.Contracts;
 
 namespace Jellyfin.Plugin.DistributedTranscoding.Worker;
 
@@ -73,11 +74,14 @@ public sealed class WorkerMetrics : IDisposable
         _maxConcurrent = maxConcurrent;
     }
 
-    public void JobStarted() => _jobsStarted.Add(1);
+    public void JobStarted(string jobType) => _jobsStarted.Add(1,
+        new KeyValuePair<string, object?>("job_type", jobType));
 
-    public void JobCompleted() => _jobsCompleted.Add(1);
+    public void JobCompleted(string jobType) => _jobsCompleted.Add(1,
+        new KeyValuePair<string, object?>("job_type", jobType));
 
-    public void JobFailed() => _jobsFailed.Add(1);
+    public void JobFailed(string jobType) => _jobsFailed.Add(1,
+        new KeyValuePair<string, object?>("job_type", jobType));
 
     public void AddFrames(long delta)
     {
@@ -95,10 +99,10 @@ public sealed class WorkerMetrics : IDisposable
         }
     }
 
-    public void UpdateJob(string jobId, float fps, float speedRatio, float bitrateKbps)
+    public void UpdateJob(string jobId, float fps, float speedRatio, float bitrateKbps, string jobType = "")
     {
         _liveJobs.AddOrUpdate(jobId,
-            _ => new JobSample { Fps = fps, SpeedRatio = speedRatio, BitrateKbps = bitrateKbps },
+            _ => new JobSample { Fps = fps, SpeedRatio = speedRatio, BitrateKbps = bitrateKbps, Type = jobType },
             (_, existing) =>
             {
                 existing.Fps = fps;
@@ -123,7 +127,8 @@ public sealed class WorkerMetrics : IDisposable
         foreach (var kvp in _liveJobs)
         {
             yield return new Measurement<double>(kvp.Value.Fps,
-                new KeyValuePair<string, object?>("job_id", kvp.Key));
+                new KeyValuePair<string, object?>("job_id", kvp.Key),
+                new KeyValuePair<string, object?>("job_type", kvp.Value.Type));
         }
     }
 
@@ -132,7 +137,8 @@ public sealed class WorkerMetrics : IDisposable
         foreach (var kvp in _liveJobs)
         {
             yield return new Measurement<double>(kvp.Value.SpeedRatio,
-                new KeyValuePair<string, object?>("job_id", kvp.Key));
+                new KeyValuePair<string, object?>("job_id", kvp.Key),
+                new KeyValuePair<string, object?>("job_type", kvp.Value.Type));
         }
     }
 
@@ -141,14 +147,25 @@ public sealed class WorkerMetrics : IDisposable
         foreach (var kvp in _liveJobs)
         {
             yield return new Measurement<double>(kvp.Value.BitrateKbps,
-                new KeyValuePair<string, object?>("job_id", kvp.Key));
+                new KeyValuePair<string, object?>("job_id", kvp.Key),
+                new KeyValuePair<string, object?>("job_type", kvp.Value.Type));
         }
     }
+
+    public static string JobTypeTag(JobType type) => type switch
+    {
+        JobType.Progressive => "progressive",
+        JobType.Hls => "hls",
+        JobType.Dash => "dash",
+        JobType.Trickplay => "trickplay",
+        _ => "unknown",
+    };
 
     private sealed class JobSample
     {
         public float Fps;
         public float SpeedRatio;
         public float BitrateKbps;
+        public string Type = string.Empty;
     }
 }

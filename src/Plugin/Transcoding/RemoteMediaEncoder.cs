@@ -79,6 +79,9 @@ public sealed class RemoteMediaEncoder : IMediaEncoder
             return await Local().ConfigureAwait(false);
         }
 
+        var mgr = _transcodeManager.Value;
+        mgr.IncrementTrickplayAttempt();
+
         string targetDirectory = null;
         string args;
         string vidEncoder;
@@ -92,12 +95,14 @@ public sealed class RemoteMediaEncoder : IMediaEncoder
         {
             _logger.LogWarning(ex, "Failed to build remote trickplay command for {Input}; extracting locally.", inputFile);
             TryCleanupDirectory(targetDirectory);
+            mgr.IncrementTrickplayRemoteFailed();
+            mgr.IncrementTrickplayLocalFallback();
             return await Local().ConfigureAwait(false);
         }
 
         try
         {
-            var ran = await _transcodeManager.Value
+            var ran = await mgr
                 .ExtractImagesRemoteAsync(args, targetDirectory, vidEncoder, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -108,10 +113,12 @@ public sealed class RemoteMediaEncoder : IMediaEncoder
                     throw new FfmpegException("Remote trickplay extraction produced no images.");
                 }
 
+                mgr.IncrementTrickplayRemoteOk();
                 return targetDirectory;
             }
 
             _logger.LogInformation("No remote worker available for trickplay ({Input}); extracting locally.", inputFile);
+            mgr.IncrementTrickplayLocalFallback();
         }
         catch (OperationCanceledException)
         {
@@ -121,6 +128,8 @@ public sealed class RemoteMediaEncoder : IMediaEncoder
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Remote trickplay extraction failed for {Input}; extracting locally.", inputFile);
+            mgr.IncrementTrickplayRemoteFailed();
+            mgr.IncrementTrickplayLocalFallback();
         }
 
         TryCleanupDirectory(targetDirectory);

@@ -468,7 +468,8 @@
                             { label: 'Active streams', data: [], borderColor: '#4caf50', backgroundColor: 'rgba(76,175,80,0.1)', yAxisID: 'y', tension: 0.2, pointRadius: 0 },
                             { label: 'Encode FPS', data: [], borderColor: '#2196f3', backgroundColor: 'rgba(33,150,243,0.1)', yAxisID: 'y', tension: 0.2, pointRadius: 0 },
                             { label: 'Throughput (kbps)', data: [], borderColor: '#ff9800', backgroundColor: 'rgba(255,152,0,0.1)', yAxisID: 'y1', tension: 0.2, pointRadius: 0 },
-                            { label: 'Avg speed', data: [], borderColor: '#9c27b0', backgroundColor: 'rgba(156,39,176,0.1)', yAxisID: 'y', tension: 0.2, pointRadius: 0 }
+                            { label: 'Avg speed', data: [], borderColor: '#9c27b0', backgroundColor: 'rgba(156,39,176,0.1)', yAxisID: 'y', tension: 0.2, pointRadius: 0 },
+                            { label: 'Trickplay (active)', data: [], borderColor: '#e91e63', backgroundColor: 'rgba(233,30,99,0.1)', yAxisID: 'y', tension: 0.2, pointRadius: 0 }
                         ]
                     },
                     options: {
@@ -500,6 +501,7 @@
                 ds[1].data.push(Math.round(metrics.EncodeFps * 10) / 10);
                 ds[2].data.push(Math.round(metrics.ThroughputKbps * 10) / 10);
                 ds[3].data.push(Math.round(metrics.AvgSpeed * 100) / 100);
+                ds[4].data.push(metrics.TrickplayActive || 0);
 
                 if (chart.data.labels.length > MAX_SAMPLES) {
                     chart.data.labels.shift();

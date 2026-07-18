@@ -31,6 +31,7 @@ public sealed class WorkerAgent
     private readonly WorkerMetrics _metrics;
 
     private readonly ConcurrentDictionary<string, FfmpegJob> _jobs = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, string> _jobTypes = new(StringComparer.Ordinal);
 
     // Recreated on every (re)connection: a Channel, once completed on disconnect, can never accept
     // writes again. A single lifetime channel would leave the worker able to Register (written
@@ -227,8 +228,11 @@ public sealed class WorkerAgent
             return;
         }
 
+        var jobTypeTag = WorkerMetrics.JobTypeTag(assign.Type);
+        _jobTypes[assign.JobId] = jobTypeTag;
+
         _outbound.Writer.TryWrite(new WorkerFrame { Accepted = new JobAccepted { JobId = assign.JobId, Accepted = true } });
-        _metrics.JobStarted();
+        _metrics.JobStarted(jobTypeTag);
 
         try
         {
@@ -239,8 +243,9 @@ public sealed class WorkerAgent
             Console.Error.WriteLine($"[worker] failed to start job {assign.JobId}: {ex.Message}");
             _outbound.Writer.TryWrite(new WorkerFrame { Exited = new JobExited { JobId = assign.JobId, ExitCode = -1 } });
             _jobs.TryRemove(assign.JobId, out _);
+            _jobTypes.TryRemove(assign.JobId, out _);
             _metrics.RemoveJob(assign.JobId);
-            _metrics.JobFailed();
+            _metrics.JobFailed(jobTypeTag);
         }
     }
 
@@ -270,15 +275,17 @@ public sealed class WorkerAgent
     private void OnJobFinished(string jobId, int exitCode)
     {
         _jobs.TryRemove(jobId, out _);
+        _jobTypes.TryRemove(jobId, out var jobTypeTag);
+        jobTypeTag ??= "unknown";
         _metrics.RemoveJob(jobId);
 
         if (exitCode == 0)
         {
-            _metrics.JobCompleted();
+            _metrics.JobCompleted(jobTypeTag);
         }
         else
         {
-            _metrics.JobFailed();
+            _metrics.JobFailed(jobTypeTag);
         }
     }
 

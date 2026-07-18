@@ -66,6 +66,11 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
     private readonly ConcurrentDictionary<string, BatchJobHandle> _batchJobs = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _transcodingLocks = new(StringComparer.Ordinal);
 
+    private long _trickplayAttempts;
+    private long _trickplayRemoteOk;
+    private long _trickplayRemoteFailed;
+    private long _trickplayLocalFallback;
+
     public RemoteTranscodeManager(
         ILoggerFactory loggerFactory,
         IFileSystem fileSystem,
@@ -1068,7 +1073,7 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
                 JobId = jobId,
                 EncoderPath = _mediaEncoder.EncoderPath,
                 Arguments = arguments,
-                Type = JobType.Progressive,
+                Type = JobType.Trickplay,
                 OutputDir = outputDir,
                 PathMap = new PathMap()
             };
@@ -1204,6 +1209,12 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
 
             handle.Speed = progress.Speed;
         }
+        else if (_batchJobs.TryGetValue(jobId, out var batch))
+        {
+            batch.Framerate = progress.Framerate;
+            batch.PercentComplete = progress.PercentComplete;
+            batch.Speed = progress.Speed;
+        }
     }
 
     /// <inheritdoc />
@@ -1224,6 +1235,7 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
             {
                 JobId = kvp.Key,
                 WorkerId = handle.Worker?.WorkerId ?? string.Empty,
+                Kind = "stream",
                 Framerate = job.Framerate ?? 0,
                 BitrateKbps = (job.BitRate ?? 0) / 1000f,
                 BytesTranscoded = job.BytesTranscoded ?? 0,
@@ -1232,8 +1244,39 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
             });
         }
 
+        foreach (var kvp in _batchJobs)
+        {
+            var batch = kvp.Value;
+            result.Add(new ActiveJobDto
+            {
+                JobId = kvp.Key,
+                WorkerId = batch.Worker?.WorkerId ?? string.Empty,
+                Kind = "trickplay",
+                Framerate = batch.Framerate,
+                PercentComplete = batch.PercentComplete,
+                Speed = batch.Speed,
+            });
+        }
+
         return result;
     }
+
+    /// <inheritdoc />
+    public TrickplayStats GetTrickplayStats() => new()
+    {
+        Attempts = Interlocked.Read(ref _trickplayAttempts),
+        RemoteOk = Interlocked.Read(ref _trickplayRemoteOk),
+        RemoteFailed = Interlocked.Read(ref _trickplayRemoteFailed),
+        LocalFallback = Interlocked.Read(ref _trickplayLocalFallback),
+    };
+
+    public void IncrementTrickplayAttempt() => Interlocked.Increment(ref _trickplayAttempts);
+
+    public void IncrementTrickplayRemoteOk() => Interlocked.Increment(ref _trickplayRemoteOk);
+
+    public void IncrementTrickplayRemoteFailed() => Interlocked.Increment(ref _trickplayRemoteFailed);
+
+    public void IncrementTrickplayLocalFallback() => Interlocked.Increment(ref _trickplayLocalFallback);
 
     /// <inheritdoc />
     public void OnLog(string jobId, string line)

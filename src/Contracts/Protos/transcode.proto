@@ -89,6 +89,7 @@ enum JobType {
   JOB_TYPE_PROGRESSIVE = 0;
   JOB_TYPE_HLS = 1;
   JOB_TYPE_DASH = 2;
+  JOB_TYPE_TRICKPLAY = 3;
 }
 
 message PathMap {

@@ -127,13 +127,22 @@ public class TranscodingController : ControllerBase
             .OrderBy(w => w.WorkerId, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        var streamJobs = activeJobs.Where(j => string.Equals(j.Kind, "stream", StringComparison.Ordinal)).ToList();
+        var trickplayActive = activeJobs.Count(j => string.Equals(j.Kind, "trickplay", StringComparison.Ordinal));
+        var trickplayStats = _jobSource.GetTrickplayStats();
+
         var dto = new MetricsDto
         {
-            ActiveStreams = workers.Sum(w => w.ActiveJobs),
+            ActiveStreams = streamJobs.Count,
             EncodeFps = activeJobs.Sum(j => j.Framerate),
             ThroughputKbps = activeJobs.Sum(j => j.BitrateKbps),
             AvgSpeed = activeJobs.Count > 0 ? activeJobs.Average(j => j.Speed) : 0,
             Workers = workerMetrics,
+            TrickplayActive = trickplayActive,
+            TrickplayAttempts = trickplayStats.Attempts,
+            TrickplayRemoteOk = trickplayStats.RemoteOk,
+            TrickplayRemoteFailed = trickplayStats.RemoteFailed,
+            TrickplayLocalFallback = trickplayStats.LocalFallback,
         };
 
         return Ok(dto);
@@ -290,6 +299,9 @@ public class ActiveJobDto
     /// <summary>Gets or sets the worker handling this job.</summary>
     public string WorkerId { get; set; } = string.Empty;
 
+    /// <summary>Gets or sets the job kind ("stream" for playback transcodes, "trickplay" for batch image extraction).</summary>
+    public string Kind { get; set; } = "stream";
+
     /// <summary>Gets or sets the current encode framerate.</summary>
     public float Framerate { get; set; }
 
@@ -311,7 +323,7 @@ public class ActiveJobDto
 /// </summary>
 public class MetricsDto
 {
-    /// <summary>Gets or sets the total number of active transcode streams.</summary>
+    /// <summary>Gets or sets the total number of active transcode streams (excludes trickplay).</summary>
     public int ActiveStreams { get; set; }
 
     /// <summary>Gets or sets the total encode framerate across all jobs (fps).</summary>
@@ -325,6 +337,21 @@ public class MetricsDto
 
     /// <summary>Gets or sets per-worker metrics.</summary>
     public IReadOnlyList<WorkerMetricsDto> Workers { get; set; } = Array.Empty<WorkerMetricsDto>();
+
+    /// <summary>Gets or sets the number of active trickplay extraction jobs.</summary>
+    public int TrickplayActive { get; set; }
+
+    /// <summary>Gets or sets the total trickplay extraction attempts since plugin load.</summary>
+    public long TrickplayAttempts { get; set; }
+
+    /// <summary>Gets or sets the total successful remote trickplay extractions.</summary>
+    public long TrickplayRemoteOk { get; set; }
+
+    /// <summary>Gets or sets the total remote trickplay failures.</summary>
+    public long TrickplayRemoteFailed { get; set; }
+
+    /// <summary>Gets or sets the total trickplay local fallbacks.</summary>
+    public long TrickplayLocalFallback { get; set; }
 }
 
 /// <summary>

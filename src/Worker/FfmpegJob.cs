@@ -157,7 +157,7 @@ public sealed class FfmpegJob
 
         _metrics.AddFrames(frameDelta);
         _metrics.AddBytes(bytesDelta);
-        _metrics.UpdateJob(JobId, _currentFps, _currentSpeed, _currentBitrateKbps);
+        _metrics.UpdateJob(JobId, _currentFps, _currentSpeed, _currentBitrateKbps, WorkerMetrics.JobTypeTag(_assign.Type));
 
         _outbound.TryWrite(new WorkerFrame
         {
