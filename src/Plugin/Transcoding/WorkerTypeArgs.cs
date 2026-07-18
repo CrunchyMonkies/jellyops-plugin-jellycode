@@ -18,6 +18,30 @@ public static class WorkerTypeArgs
     private static readonly Regex VideoEncoderRegex =
         new(@"-(?:c|codec):v\s+(\S+)", RegexOptions.Compiled | RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(200));
 
+    /// <summary>Matches the (first) audio encoder selection, e.g. "-c:a libfdk_aac" / "-codec:a:0 aac".</summary>
+    public static readonly Regex AudioEncoderRegex =
+        new(@"-(?:c|codec):a(?::\d+)?\s+(\S+)", RegexOptions.Compiled | RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(200));
+
+    /// <summary>
+    /// Extracts the audio encoder from a command line, or <c>null</c> when absent or "copy".
+    /// </summary>
+    public static string? ParseAudioEncoder(string args)
+    {
+        if (string.IsNullOrEmpty(args))
+        {
+            return null;
+        }
+
+        var match = AudioEncoderRegex.Match(args);
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        var encoder = match.Groups[1].Value;
+        return string.Equals(encoder, "copy", StringComparison.OrdinalIgnoreCase) ? null : encoder;
+    }
+
     /// <summary>
     /// Returns <paramref name="args"/> with the type's arg-level overrides applied. No-ops for any
     /// option left at its default.

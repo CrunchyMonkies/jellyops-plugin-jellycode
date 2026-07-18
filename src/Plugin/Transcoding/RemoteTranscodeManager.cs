@@ -385,8 +385,9 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
     }
 
     /// <summary>Builds the worker predicate for a selection stage: type match + enabled + concurrency,
-    /// plus (for encodes) a best-effort encode-capability gate and optional hw-decode requirement.</summary>
-    private Func<WorkerConnection, bool> BuildStagePredicate(SelectionStage stage, string? decodeCodec, string? encodeCodec, bool isCopy)
+    /// plus (for encodes) a best-effort encode-capability gate, optional hw-decode requirement, and
+    /// an audio-encoder gate when the job needs a specific audio encoder.</summary>
+    private Func<WorkerConnection, bool> BuildStagePredicate(SelectionStage stage, string? decodeCodec, string? encodeCodec, bool isCopy, string? requiredAudioEncoder)
     {
         if (stage.AnyWorker || stage.Type is null)
         {
@@ -413,6 +414,13 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
             }
 
             if (!isCopy && !WorkerSupportsEncode(w, encodeCodec, type))
+            {
+                return false;
+            }
+
+            if (requiredAudioEncoder is not null
+                && w.Encoders.Count > 0
+                && !w.Encoders.Any(e => string.Equals(e, requiredAudioEncoder, StringComparison.OrdinalIgnoreCase)))
             {
                 return false;
             }
@@ -634,6 +642,7 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
         var isCopy = EncodingHelper.IsCopyCodec(state.OutputVideoCodec);
         var isVideoEncode = state.VideoStream is not null && !isCopy;
         var encodeCodec = isCopy ? "copy" : state.ActualOutputVideoCodec;
+        var requiredAudioEncoder = WorkerTypeArgs.ParseAudioEncoder(commandLineArguments);
         var priority = Config.ResolveWorkerPriority(decodeCodec, encodeCodec);
         var stages = BuildSelectionStages(isVideoEncode, priority);
         _logger.LogInformation(
@@ -651,7 +660,7 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
         for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
             var stage = stages[stageIndex];
-            var predicate = BuildStagePredicate(stage, decodeCodec, encodeCodec, isCopy);
+            var predicate = BuildStagePredicate(stage, decodeCodec, encodeCodec, isCopy, requiredAudioEncoder);
 
             // Copy/audio jobs run the server-emitted command verbatim; encode jobs get per-type args.
             string currentArgs;

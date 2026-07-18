@@ -126,4 +126,103 @@ public class WorkerTypeArgsTests
             Assert.Equal("auto", d.Encoder);
         });
     }
+
+    // ------------------------------------------------------------------
+    // ParseAudioEncoder
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public void ParseAudioEncoder_WithStreamIndex()
+    {
+        Assert.Equal("libfdk_aac", WorkerTypeArgs.ParseAudioEncoder("-i in.mkv -c:v libx264 -c:a:0 libfdk_aac -f hls out.m3u8"));
+    }
+
+    [Fact]
+    public void ParseAudioEncoder_CodecShortForm()
+    {
+        Assert.Equal("aac", WorkerTypeArgs.ParseAudioEncoder("-i in.mkv -c:a aac -f hls out.m3u8"));
+    }
+
+    [Fact]
+    public void ParseAudioEncoder_LongForm()
+    {
+        Assert.Equal("aac", WorkerTypeArgs.ParseAudioEncoder("-i in.mkv -codec:a aac -f hls out.m3u8"));
+    }
+
+    [Fact]
+    public void ParseAudioEncoder_CopyReturnsNull()
+    {
+        Assert.Null(WorkerTypeArgs.ParseAudioEncoder("-i in.mkv -c:a copy -f hls out.m3u8"));
+    }
+
+    [Fact]
+    public void ParseAudioEncoder_CopyCaseInsensitive()
+    {
+        Assert.Null(WorkerTypeArgs.ParseAudioEncoder("-i in.mkv -c:a COPY -f hls out.m3u8"));
+    }
+
+    [Fact]
+    public void ParseAudioEncoder_AbsentReturnsNull()
+    {
+        Assert.Null(WorkerTypeArgs.ParseAudioEncoder("-i in.mkv -c:v libx264 -f hls out.m3u8"));
+    }
+
+    [Fact]
+    public void ParseAudioEncoder_NullInputReturnsNull()
+    {
+        Assert.Null(WorkerTypeArgs.ParseAudioEncoder(null!));
+    }
+
+    // ------------------------------------------------------------------
+    // FfmpegCapabilities — audio encoder parsing
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public void ParseEncoders_IncludesAudioEncoders()
+    {
+        const string output = @"Encoders:
+ V..... libx264              libx264 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (codec h264)
+ V..... h264_nvenc           NVIDIA NVENC H.264 encoder (codec h264)
+ A..... aac                  AAC (Advanced Audio Coding)
+ A..... libfdk_aac           Fraunhofer FDK AAC (codec aac)
+ A..... libmp3lame           libmp3lame MP3 (codec mp3)
+ A..... flac                 FLAC (Free Lossless Audio Codec)
+ A..... pcm_s16le            PCM signed 16-bit little-endian
+ S..... srt                  SubRip subtitle
+";
+        var encoders = FfmpegCapabilities.ParseVideoList(output,
+            new System.Text.RegularExpressions.Regex(@"^\s*A[\.A-Z]{5,}\s+(\S+)",
+                System.Text.RegularExpressions.RegexOptions.Compiled, System.TimeSpan.FromMilliseconds(200)),
+            new[] { "libfdk_aac", "aac", "ac3", "eac3", "libopus", "opus", "libmp3lame", "mp3", "flac", "alac", "libvorbis", "dts" });
+
+        Assert.Contains("aac", encoders);
+        Assert.Contains("libfdk_aac", encoders);
+        Assert.Contains("libmp3lame", encoders);
+        Assert.Contains("flac", encoders);
+        Assert.DoesNotContain("pcm_s16le", encoders);
+        Assert.DoesNotContain("libx264", encoders);
+    }
+
+    [Fact]
+    public void ParseEncoders_VideoStillParsed()
+    {
+        const string output = @"Encoders:
+ V..... libx264              libx264 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (codec h264)
+ V..... h264_nvenc           NVIDIA NVENC H.264 encoder (codec h264)
+ A..... aac                  AAC (Advanced Audio Coding)
+ A..... libfdk_aac           Fraunhofer FDK AAC (codec aac)
+";
+        var videoEncoders = FfmpegCapabilities.ParseVideoList(output,
+            new System.Text.RegularExpressions.Regex(@"^\s*V[\.A-Z]{5,}\s+(\S+)",
+                System.Text.RegularExpressions.RegexOptions.Compiled, System.TimeSpan.FromMilliseconds(200)),
+            new[] { "libx264", "libx265", "libsvtav1", "libaom-av1", "libvpx-vp9", "mpeg4",
+                    "h264_nvenc", "hevc_nvenc", "av1_nvenc",
+                    "h264_qsv", "hevc_qsv", "av1_qsv", "vp9_qsv",
+                    "h264_vaapi", "hevc_vaapi", "av1_vaapi", "vp9_vaapi",
+                    "h264_videotoolbox", "hevc_videotoolbox" });
+
+        Assert.Contains("libx264", videoEncoders);
+        Assert.Contains("h264_nvenc", videoEncoders);
+        Assert.DoesNotContain("aac", videoEncoders);
+    }
 }

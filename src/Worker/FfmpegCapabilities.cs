@@ -52,6 +52,16 @@ public sealed record FfmpegCapabilities(
     private static readonly Regex EncodersLineRegex =
         new(@"^\s*V[\.A-Z]{5,}\s+(\S+)", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200));
 
+    private static readonly Regex AudioEncodersLineRegex =
+        new(@"^\s*A[\.A-Z]{5,}\s+(\S+)", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200));
+
+    /// <summary>The audio encoders we care about advertising, by name as ffmpeg lists them.</summary>
+    private static readonly string[] KnownAudioEncoders =
+    {
+        "libfdk_aac", "aac", "ac3", "eac3", "libopus", "opus",
+        "libmp3lame", "mp3", "flac", "alac", "libvorbis", "dts",
+    };
+
     // -decoders uses the same "V.....  name" column layout as -encoders.
     private static readonly Regex DecodersLineRegex =
         new(@"^\s*V[\.A-Z]{5,}\s+(\S+)", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200));
@@ -217,8 +227,20 @@ public sealed record FfmpegCapabilities(
         return match.Success ? match.Groups[1].Value : "unknown";
     }
 
-    private static IReadOnlyList<string> ParseEncoders(string output) =>
-        ParseVideoList(output, EncodersLineRegex, KnownVideoEncoders);
+    private static IReadOnlyList<string> ParseEncoders(string output)
+    {
+        var video = ParseVideoList(output, EncodersLineRegex, KnownVideoEncoders);
+        var audio = ParseVideoList(output, AudioEncodersLineRegex, KnownAudioEncoders);
+        if (audio.Count == 0)
+        {
+            return video;
+        }
+
+        var combined = new List<string>(video.Count + audio.Count);
+        combined.AddRange(video);
+        combined.AddRange(audio);
+        return combined;
+    }
 
     /// <summary>
     /// Parses an ffmpeg <c>-encoders</c>/<c>-decoders</c> listing, keeping video entries whose name is
