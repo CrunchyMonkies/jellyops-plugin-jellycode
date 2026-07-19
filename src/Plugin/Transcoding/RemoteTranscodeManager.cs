@@ -696,6 +696,11 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
                     continue;
                 }
 
+                if (TryPreemptTrickplayFor(predicate))
+                {
+                    continue;
+                }
+
                 OnTranscodeFailedToStart(outputPath, transcodingJobType, state);
                 throw new FfmpegException("No transcoding worker available.");
             }
@@ -1035,6 +1040,55 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
     }
 
     /// <summary>
+    /// Attempts to preempt (cancel) a running trickplay extraction job on a worker that satisfies
+    /// <paramref name="predicate"/>, freeing a slot for a streaming transcode. Picks the victim with the
+    /// lowest <see cref="BatchJobHandle.PercentComplete"/> to minimise wasted work.
+    /// </summary>
+    /// <param name="predicate">Worker capability filter from the current selection stage.</param>
+    /// <returns><c>true</c> if a trickplay job was successfully preempted; <c>false</c> otherwise.</returns>
+    private bool TryPreemptTrickplayFor(Func<WorkerConnection, bool> predicate)
+    {
+        if (!Config.StreamingPreemptsTrickplay)
+        {
+            return false;
+        }
+
+        BatchJobHandle? victim = null;
+        foreach (var kvp in _batchJobs)
+        {
+            var handle = kvp.Value;
+            if (handle.Worker is null || !predicate(handle.Worker))
+            {
+                continue;
+            }
+
+            if (handle.Worker.FreeSlots != 0)
+            {
+                continue;
+            }
+
+            if (victim is null || handle.PercentComplete < victim.PercentComplete)
+            {
+                victim = handle;
+            }
+        }
+
+        if (victim is null)
+        {
+            return false;
+        }
+
+        victim.Preempted = true;
+        victim.Worker!.TrySend(new ServerFrame
+        {
+            Control = new JobControl { JobId = victim.JobId, Action = JobControl.Types.Action.Stop }
+        });
+        victim.Worker.FreeSlots++;
+        _logger.LogInformation("Preempting trickplay job {JobId} on worker {WorkerId} for streaming", victim.JobId, victim.Worker.WorkerId);
+        return true;
+    }
+
+    /// <summary>
     /// Runs a one-shot batch ffmpeg job (e.g. trickplay frame extraction) on a remote worker and waits for
     /// it to finish. The worker runs <paramref name="arguments"/> writing to its local scratch dir and
     /// streams every produced file back to <paramref name="outputDir"/> on the server; this method returns
@@ -1138,6 +1192,23 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
 
             if (exitCode != 0)
             {
+                if (handle.Preempted)
+                {
+                    // The job was killed to free a slot for streaming — clean partial output and retry.
+                    _logger.LogInformation("Batch job {JobId} was preempted; retrying on mesh", jobId);
+                    try
+                    {
+                        Directory.Delete(outputDir, true);
+                        Directory.CreateDirectory(outputDir);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to clean output dir after preemption for job {JobId}", jobId);
+                    }
+
+                    continue;
+                }
+
                 throw new FfmpegException(string.Format(CultureInfo.InvariantCulture, "Remote batch job {0} failed with exit code {1}.", jobId, exitCode));
             }
 
@@ -1214,7 +1285,7 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
                 progress.Framerate > 0 ? progress.Framerate : null,
                 progress.PercentComplete > 0 ? progress.PercentComplete : null,
                 progress.BytesTranscoded > 0 ? progress.BytesTranscoded : null,
-                progress.Bitrate > 0 ? progress.Bitrate : null);
+                progress.Bitrate > 0 ? (int)(progress.Bitrate * 1000) : null);
 
             handle.Speed = progress.Speed;
         }

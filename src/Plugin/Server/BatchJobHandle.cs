@@ -40,6 +40,13 @@ public sealed class BatchJobHandle : IDisposable
     public float Speed { get; set; }
 
     /// <summary>
+    /// Gets or sets a value indicating whether this job was preempted by a streaming transcode request.
+    /// When true, a non-zero exit code is treated as expected (the worker was told to stop) rather than
+    /// as a failure, and the caller retries on the mesh without counting it as a hard failure.
+    /// </summary>
+    public bool Preempted { get; set; }
+
+    /// <summary>
     /// Appends a streamed chunk to a temp file; on eof atomically promotes it to the canonical path
     /// inside <see cref="OutputDir"/>, so the caller only ever enumerates complete files.
     /// </summary>

@@ -30,6 +30,13 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool OffloadTrickplay { get; set; } = true;
 
     /// <summary>
+    /// Gets or sets a value indicating whether a streaming transcode request may preempt (cancel) an
+    /// in-progress trickplay extraction job when all workers are busy, freeing a slot for the stream.
+    /// The preempted trickplay job will be re-queued automatically.
+    /// </summary>
+    public bool StreamingPreemptsTrickplay { get; set; } = true;
+
+    /// <summary>
     /// Gets or sets the per-worker-type transcoding options (cpu / intel / nvidia). Defaults leave
     /// the pipeline unchanged; operators can override codec/encoder/preset/quality/bitrate/etc. per
     /// type from the plugin settings page.

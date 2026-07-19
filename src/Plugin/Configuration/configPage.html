@@ -125,6 +125,16 @@
                             <label class="inputLabel inputLabelUnfocused" for="dtFirstSegmentTimeout">First-segment timeout (seconds)</label>
                             <input id="dtFirstSegmentTimeout" type="number" min="1" class="emby-input" />
                         </div>
+                        <div class="checkboxContainer">
+                            <label>
+                                <input id="dtStreamingPreemptsTrickplay" type="checkbox" is="emby-checkbox" />
+                                <span>Streaming preempts trickplay</span>
+                            </label>
+                            <div class="fieldDescription">
+                                When all workers are busy, cancel the least-progressed trickplay extraction to
+                                free a slot for a streaming transcode. The preempted trickplay job retries automatically.
+                            </div>
+                        </div>
                     </div>
 
                     <!-- ===== Tab: Metrics ===== -->
@@ -530,6 +540,7 @@
                     el('#dtListenAddress', page).value = config.ListenAddress || '0.0.0.0';
                     el('#dtGrpcPort', page).value = config.GrpcPort || 9090;
                     el('#dtFirstSegmentTimeout', page).value = config.FirstSegmentTimeoutSeconds || 60;
+                    el('#dtStreamingPreemptsTrickplay', page).checked = config.StreamingPreemptsTrickplay !== false;
                     renderTypes(page, config, caps);
                     renderRouting(page, config);
                     renderWorkers(page, workers);
@@ -546,6 +557,7 @@
                     config.ListenAddress = el('#dtListenAddress', page).value;
                     config.GrpcPort = parseInt(el('#dtGrpcPort', page).value, 10) || 9090;
                     config.FirstSegmentTimeoutSeconds = parseInt(el('#dtFirstSegmentTimeout', page).value, 10) || 60;
+                    config.StreamingPreemptsTrickplay = el('#dtStreamingPreemptsTrickplay', page).checked;
                     config.WorkerTypes = readTypes(page);
                     var routing = readRouting(page);
                     config.DefaultWorkerPriority = routing.DefaultWorkerPriority;
