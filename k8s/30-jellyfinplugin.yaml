@@ -10,7 +10,8 @@
 #   worker (read-only, at the same paths) — no need to re-declare it here (§8.2).
 #
 # Image references are pinned by digest — replace the placeholders with the @sha256
-# values printed by docker/build-push.sh.
+# values printed by the CI run summary (the GHCR publish path); docker/build-push.sh
+# still pushes the legacy Harbor copies.
 apiVersion: jellyfin.jellyops.io/v1alpha1
 kind: JellyfinPlugin
 metadata:
@@ -22,7 +23,7 @@ spec:
   jellyfinRef:
     name: home-media
   pluginImage:
-    reference: harbor.bne1.ouchi.com.au/applications/jellyfin-distributed-plugin@sha256:08e00cfab506602110d3d74f99085c4b782f116545b5aae335106f9ae4ef7df5
+    reference: ghcr.io/crunchymonkies/jellyops-plugin-jellycode/plugin@sha256:c0b9b8e7b76bc5f55c9190c0aeb2bfc741d67b13421970dc51891611417af8e0
     pullPolicy: IfNotPresent
   meta:
     guid: b9f8c1a2-3d4e-4f5a-9b6c-7d8e9f0a1b2c
@@ -46,7 +47,7 @@ spec:
   workloads:
     - name: worker
       image:
-        reference: harbor.bne1.ouchi.com.au/applications/jellyfin-distributed-worker@sha256:63376c1501af55b5e0704063334f1e1ae8b16e0788392cd524d7efd7f7d9c686
+        reference: ghcr.io/crunchymonkies/jellyops-plugin-jellycode/worker@sha256:0916cba9482af5d14a3303e72d573c876ee5d79d8e31decf4d092c00bbf404b0
       replicas: 3
       # Bound the worker (DT_MAX_CONCURRENT concurrent transcodes). Bump limits for
       # higher concurrency or add GPU resources (e.g. gpu.intel.com/xe) for HW transcode.
