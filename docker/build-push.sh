@@ -27,8 +27,10 @@ TAG="${1:-$(date +%Y%m).$(date +%d).1}"
 # The plugin-free server MUST carry a v12 version tag: JellyOps derives the server
 # version from the image tag to gate the plugin's targetAbi (12.0.0.0).
 SERVER_VERSION="12.0.0"
-# The plugin image is versioned by the plugin version (mirrors meta.json).
-PLUGIN_VERSION="0.0.1.0"
+# The plugin image is versioned by the plugin version, read straight from meta.json so
+# the two can never drift apart.
+PLUGIN_VERSION="$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$REPO_ROOT/src/Plugin/meta.json" | head -1 | grep -oE '[0-9.]+' || true)"
+PLUGIN_VERSION="${PLUGIN_VERSION:-unknown}"
 
 echo "[build-push] tag=$TAG"
 

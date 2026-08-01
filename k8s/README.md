@@ -11,7 +11,7 @@ Built and pushed by [`../docker/build-push.sh`](../docker/build-push.sh):
 | Image | Role |
 |---|---|
 | `jellyfin-server:12.0.0` | Plugin-free Jellyfin v12 — the `Jellyfin` CR `spec.image`. The `12.0.0` tag satisfies the plugin's `targetAbi`. |
-| `jellyfin-distributed-plugin:0.0.1.0` | Plugin-only image-volume payload (`meta.json` + DLLs at root). |
+| `jellyfin-distributed-plugin:0.4.1.0` | Plugin-only image-volume payload (`meta.json` + DLLs at root). |
 | `jellyfin-distributed-worker:<tag>` | ffmpeg worker pod; dials the in-pod gRPC mesh on `:9090`. |
 
 ## Prerequisites
