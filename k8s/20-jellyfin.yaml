@@ -2,15 +2,17 @@
 # Distributed Transcoding plugin (see 30-jellyfinplugin.yaml) as an image volume.
 #
 # spec.image MUST be a plugin-free Jellyfin v12 image whose tag encodes the version:
-# the operator parses the tag (v12.0.0-rc3-jc-0.2.1 -> 12.0.0) to satisfy the plugin's
-# targetAbi (12.0.0.0). Stock jellyfin/jellyfin:latest is 10.x and would fail the ABI gate.
+# the operator parses the tag (v12.3-jc-0.2.4 -> 12.3) to satisfy the plugin's
+# targetAbi (12.3.0.0). Stock jellyfin/jellyfin:latest is 10.x and would fail the ABI gate.
+# Pinned by digest (tag kept for the ABI parse). Fork release: CrunchyMonkies/jellyfin
+# v12.3-jc-0.2.4 (upstream Jellyfin 12.3 + jellycode customisations).
 apiVersion: jellyfin.jellyops.io/v1alpha1
 kind: Jellyfin
 metadata:
   name: home-media
   namespace: media
 spec:
-  image: ghcr.io/crunchymonkies/jellyfin:v12.0.0-rc3-jc-0.2.1
+  image: ghcr.io/crunchymonkies/jellyfin:v12.3-jc-0.2.4@sha256:7987029edd1f264cf86b16148a004fe07d038ba92e9459c2685bf3f61c3d08c0
   replicas: 1
   storage:
     config:
@@ -36,3 +38,7 @@ spec:
   pluginSelector:
     matchLabels:
       jellyfin.jellyops.io/instance: home-media
+  # Optional separate web tier, matched to the server release above:
+  # web:
+  #   image: ghcr.io/crunchymonkies/jellyfin-web:v12.3-jc-0.2.4@sha256:0ae44037c98ab15907bc2105f27c9613f49611c8765117c8302c7b1f8fea213d
+  #   replicas: 2

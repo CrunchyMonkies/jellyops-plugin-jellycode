@@ -65,7 +65,7 @@ dotnet test/SmokeHost/bin/Release/net10.0/Jellyfin.Plugin.DistributedTranscoding
 
 ## Run in Docker (verified end-to-end)
 
-Because the plugin targets the local `../jellyfin-src` (v12.0.0) — not the public 10.x images — the
+Because the plugin targets the local `../jellyfin-src` (fork tag `v12.3-jc-0.2.4`, Jellyfin 12.3) — not the public 10.x images — the
 container builds Jellyfin from that source and runs it headless with the plugin + an in-container worker.
 
 ```bash
@@ -78,7 +78,7 @@ docker/run.sh down      # stop & remove
 On boot you should see in the logs:
 
 ```
-PluginManager: Loaded plugin: Distributed Transcoding 0.4.1.0
+PluginManager: Loaded plugin: Distributed Transcoding 0.4.2.0
 GrpcHostedService: Distributed transcoding gRPC listener started on 0.0.0.0:9090 (h2c)
 WorkerRegistry: Worker registered: docker-w1 (maxConcurrent=2)
 ```
@@ -128,8 +128,8 @@ Published to `harbor.bne1.ouchi.com.au/applications/`:
 |---|---|
 | `jellyfin-distributed-server:<tag>` | Jellyfin v12 (built from `../jellyfin-src`) + the plugin baked in. No embedded worker; hosts the gRPC mesh on :9090. Headless (`--nowebclient`). Non-operator docker path. |
 | `jellyfin-distributed-worker:<tag>` | Standalone ffmpeg worker that dials the server and streams segments back. The horizontally-scaled artifact. |
-| `jellyfin-server:12.0.0` | **Plugin-free** Jellyfin v12 — the `Jellyfin` CR `spec.image` for the JellyOps path. The `12.0.0` tag satisfies the plugin's `targetAbi`. |
-| `jellyfin-distributed-plugin:0.4.1.0` | **Plugin-only image-volume payload** (`meta.json` + DLLs at root) that JellyOps mounts and injects. |
+| `jellyfin-server:12.3.0` | **Plugin-free** Jellyfin v12 — the `Jellyfin` CR `spec.image` for the JellyOps path. The `12.3.0` tag satisfies the plugin's `targetAbi`. |
+| `jellyfin-distributed-plugin:0.4.2.0` | **Plugin-only image-volume payload** (`meta.json` + DLLs at root) that JellyOps mounts and injects. |
 
 Tags: a date-based `YYYYMM.DD.N` plus `latest`. Build & push both (requires
 `docker login harbor.bne1.ouchi.com.au`):
@@ -140,7 +140,7 @@ docker/build-push.sh 202606.21.1 # explicit tag
 ```
 
 **Worker env** (override per Deployment): `DT_SERVER` (default `http://jellyfin:9090`), `DT_WORKER_ID`
-(default hostname), `DT_FFMPEG` (`/usr/bin/ffmpeg`), `DT_MAX_CONCURRENT` (`2`), `DT_SCRATCH` (`/tmp/worker`).
+(default hostname), `DT_FFMPEG` (set per image variant: `/usr/lib/jellyfin-ffmpeg/ffmpeg` for cpu/nvidia, the VAAPI wrapper for intel), `DT_MAX_CONCURRENT` (`2`), `DT_SCRATCH` (`/tmp/worker`).
 
 Quick two-container check (server + worker on one network):
 
@@ -164,13 +164,13 @@ The [JellyOps](../jellyops) operator delivers this plugin declaratively: the plu
 companion workload. The manifests live in [`k8s/`](k8s/) — see [`k8s/README.md`](k8s/README.md).
 
 ```bash
-docker/build-push.sh                       # builds jellyfin-server:12.0.0 + jellyfin-distributed-plugin
+docker/build-push.sh                       # builds jellyfin-server:12.3.0 + jellyfin-distributed-plugin
                                            # (+ worker), pushes to Harbor, prints the @sha256 digests
 # paste the printed digests into k8s/30-jellyfinplugin.yaml, then:
 kubectl apply -f k8s/                       # namespace, media PVC, Jellyfin CR, JellyfinPlugin CR
 ```
 
-JellyOps ABI-gates on the server image tag, so the `Jellyfin` CR uses the plugin-free `jellyfin-server:12.0.0`
+JellyOps ABI-gates on the server image tag, so the `Jellyfin` CR uses the plugin-free `jellyfin-server:12.3.0`
 image; it injects `jellyfin-distributed-plugin` via `imageVolumeCopy` and runs the workers, which mount the
 same media claim at the same path and dial the in-pod gRPC mesh on `:9090`. Requires a K8s ≥ 1.33 cluster
 with image volumes enabled.
@@ -249,7 +249,7 @@ metadata:
   name: my-jellyfin
 spec:
   image:
-    reference: harbor.bne1.ouchi.com.au/applications/jellyfin-server:12.0.0
+    reference: harbor.bne1.ouchi.com.au/applications/jellyfin-server:12.3.0
   podSecurity:
     runAsUser: 1000
     runAsGroup: 1000
@@ -323,7 +323,7 @@ docker run -d --name jellyfin-worker-gpu \
    ```bash
    scripts/deploy-plugin.sh [PLUGINS_DIR]   # default ~/.local/share/jellyfin/plugins
    ```
-   Stages to `<PLUGINS_DIR>/Distributed Transcoding_0.4.1.0/` (plugin + Contracts + Grpc + meta.json).
+   Stages to `<PLUGINS_DIR>/Distributed Transcoding_0.4.2.0/` (plugin + Contracts + Grpc + meta.json).
 
 2. **Start a worker** (same host as the server in Phase 0, sharing media + transcode paths so the
    identity `PathMap` works). Point `--ffmpeg` at the same binary the server reports as its encoder
