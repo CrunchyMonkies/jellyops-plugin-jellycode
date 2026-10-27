@@ -13,9 +13,6 @@
 # values printed by the CI run summary (the GHCR publish path); docker/build-push.sh
 # still pushes the legacy Harbor copies.
 #
-# TODO(0.4.2.0): the pluginImage and worker digests below are still the 0.4.1.0 builds
-# (targetAbi 12.0.0.0). Re-pin both to the digests printed by the v0.4.2.0 tag build
-# (plugin-image + worker-images workflows) once it has published.
 apiVersion: jellyfin.jellyops.io/v1alpha1
 kind: JellyfinPlugin
 metadata:
@@ -27,7 +24,7 @@ spec:
   jellyfinRef:
     name: home-media
   pluginImage:
-    reference: ghcr.io/crunchymonkies/jellyops-plugin-jellycode/plugin@sha256:c0b9b8e7b76bc5f55c9190c0aeb2bfc741d67b13421970dc51891611417af8e0
+    reference: ghcr.io/crunchymonkies/jellyops-plugin-jellycode/plugin@sha256:f4084bc7a251983db880124e767ea736e771b6c2207d066d9ed847fdf93d8fa7
     pullPolicy: IfNotPresent
   meta:
     guid: b9f8c1a2-3d4e-4f5a-9b6c-7d8e9f0a1b2c
@@ -51,7 +48,7 @@ spec:
   workloads:
     - name: worker
       image:
-        reference: ghcr.io/crunchymonkies/jellyops-plugin-jellycode/worker@sha256:0916cba9482af5d14a3303e72d573c876ee5d79d8e31decf4d092c00bbf404b0
+        reference: ghcr.io/crunchymonkies/jellyops-plugin-jellycode/worker@sha256:811056049c6473673fb07b528b39a5dc0db3feff29672c51007203380d13d47d
       replicas: 3
       # Bound the worker (DT_MAX_CONCURRENT concurrent transcodes). Bump limits for
       # higher concurrency or add GPU resources (e.g. gpu.intel.com/xe) for HW transcode.
