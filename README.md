@@ -104,7 +104,7 @@ on every push to `main` (and on `v*` tags) as a **single package with per-varian
 | Tag | ffmpeg | Runtime requirement |
 |---|---|---|
 | `:cpu` (`:latest`) | distro ffmpeg (software x264/x265) | none |
-| `:intel` | jellyfin-ffmpeg (VAAPI/QSV, bundled Intel iHD driver) | an Intel GPU render node — `/dev/dri` (or the Intel device-plugin resource `gpu.intel.com/xe` / `i915`), and Jellyfin set to `HardwareAccelerationType: vaapi` |
+| `:intel` | jellyfin-ffmpeg (VAAPI/QSV, bundled Intel iHD driver) | an Intel GPU render node — `/dev/dri` (or the Intel device-plugin resource `gpu.intel.com/xe` / `i915`), and Jellyfin set to `HardwareAccelerationType: vaapi` or `qsv` |
 | `:nvidia` | jellyfin-ffmpeg (NVENC) | the NVIDIA container runtime + a GPU (`nvidia.com/gpu`, `runtimeClassName: nvidia`), and Jellyfin set to `nvenc` |
 
 Tags also include `:<variant>-<sha>` (every build) and `:<variant>-<tag>` (on releases). Pull:
@@ -115,9 +115,9 @@ docker pull ghcr.io/crunchymonkies/jellyops-plugin-jellycode/worker:intel
 docker pull ghcr.io/crunchymonkies/jellyops-plugin-jellycode/worker:nvidia
 ```
 
-> The HW variants only add ffmpeg + drivers; the worker binary is identical. The device path in the
-> ffmpeg args comes from the Jellyfin server's config and is passed through unchanged, so the worker
-> must expose the same `/dev/dri` render node the server is configured for. On first publish the GHCR
+> The HW variants only add ffmpeg + drivers; the worker binary is identical. The `:intel` wrapper
+> rewrites any `/dev/dri/renderD<N>` in the server-built ffmpeg args to the render node the worker
+> was actually allocated, so server and worker do not need matching render nodes. On first publish the GHCR
 > package is **private** — flip it to public in the repo's *Packages* settings if you want open pulls.
 
 ## Container images (Harbor)
@@ -181,12 +181,19 @@ ffmpeg runs on the **worker**, so the GPU must be on the **worker** pods — not
 matching worker image variant, give the worker pods the GPU, and enable HW accel in Jellyfin. Because Phase 0
 has no hwaccel-aware scheduling, run a **homogeneous** worker pool (all workers the same variant).
 
-**Key caveat (distributed-specific):** the Jellyfin *server* builds the ffmpeg command. For **VAAPI** it only
-adds the `-init_hw_device` after probing a *local* render device — so if the server has no GPU (e.g. it's pinned
-to a non-GPU node), it emits a `*_vaapi` encoder with no device set up. The `:intel` image handles this: `DT_FFMPEG`
-points at a small wrapper (`docker/vaapi-ffmpeg-wrap.sh`) that injects `-init_hw_device vaapi=va:<render node>
--filter_hw_device va` when it sees a `*_vaapi` job with no device — so the worker HW-encodes regardless. (If your
-server *does* have the GPU, plain VAAPI works without the wrapper.)
+**Key caveat (distributed-specific):** the Jellyfin *server* builds the ffmpeg command, but the worker's render
+node is rarely the server's — device plugins and multi-GPU hosts allocate whichever node is free (`renderD128`,
+`renderD129`, ...). The `:intel` image's `DT_FFMPEG` points at a small wrapper (`docker/vaapi-ffmpeg-wrap.sh`) that
+finds the node the worker can actually see (same scan as the jellyops server startup: `DT_RENDER_DEVICE` pins it,
+otherwise the first `renderD*` whose PCI vendor is `DT_RENDER_VENDOR`, default Intel `0x8086`, otherwise the first
+node) and then:
+
+- **Server with a GPU** (VAAPI or QSV): rewrites every `/dev/dri/renderD<N>` in the args to the worker's node, so
+  the server's full hardware pipeline (HW decode, `scale_vaapi`/`vpp_qsv`, `*_qsv`/`*_vaapi` encode) runs on the
+  worker. Without the rewrite the job fails with `Device creation failed`.
+- **GPU-less server** (VAAPI only — Jellyfin emits `-init_hw_device` only after probing a *local* device, so it
+  sends a `*_vaapi` encoder with no device): injects `-init_hw_device vaapi=va:<node> -filter_hw_device va` plus
+  `-hwaccel vaapi`, so the worker HW-encodes regardless.
 
 ### Intel (VAAPI) — Kubernetes
 
@@ -203,10 +210,13 @@ env:
   - {name: DT_FFMPEG, value: /usr/local/bin/ffmpeg-vaapi-wrap}
 ```
 
-Then set Jellyfin → Playback → **VAAPI**, device `/dev/dri/renderD128`. The wrapper runs both **decode and
-encode** on the GPU (it adds `-hwaccel vaapi`, with automatic software fallback for codecs the card can't
-decode, e.g. Xvid); only scaling stays on CPU (~1.4 cores per 1080p stream vs ~4.3 fully-software). Note:
-**QSV/oneVPL fails on current Xe/Battlemage cards** (`-17` child-device error) — use VAAPI.
+Then enable hardware acceleration in Jellyfin. If the server pod has its own GPU (e.g. the jellyops
+`hardwareAcceleration` block, which auto-detects its node), use **QSV** or **VAAPI** as the server already does —
+the full pipeline then runs on the worker GPU. With a GPU-less server set **VAAPI**; the wrapper runs **decode and
+encode** on the GPU (it adds `-hwaccel vaapi`, with automatic software fallback for codecs the card can't decode,
+e.g. Xvid); only scaling stays on CPU (~1.4 cores per 1080p stream vs ~4.3 fully-software). QSV on Battlemage
+(Arc Pro B60, xe KMD) works with the jellyfin-ffmpeg8 / iHD 26.x stack in this image when the device is set up
+from a matching render node, which the rewrite guarantees.
 
 ### NVIDIA (NVENC) — Kubernetes
 
