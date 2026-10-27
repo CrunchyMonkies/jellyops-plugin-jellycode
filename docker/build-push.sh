@@ -3,13 +3,13 @@
 # Build and push the JellyOps + all-in-one images to Harbor:
 #   - jellyfin-distributed-server  all-in-one (plugin baked in) — non-operator docker path
 #   - jellyfin-distributed-worker  ffmpeg worker pod
-#   - jellyfin-server:12.0.0       plugin-free v12 server — Jellyfin CR spec.image for JellyOps
+#   - jellyfin-server:12.3.0       plugin-free v12 server — Jellyfin CR spec.image for JellyOps
 #   - jellyfin-distributed-plugin  plugin-only image-volume payload for JellyOps
 #
 #   docker/build-push.sh [TAG]
 #
 # TAG defaults to a date-based tag (YYYYMM.DD.1). Images are also tagged :latest, and the
-# JellyOps images additionally carry version tags (server :12.0.0, plugin :0.0.1.0).
+# JellyOps images additionally carry version tags (server :12.3.0, plugin :0.0.1.0).
 # On completion the pushed @sha256 digests are printed for pinning the JellyfinPlugin CR.
 # Requires: `docker login harbor.bne1.ouchi.com.au` already done.
 set -euo pipefail
@@ -25,8 +25,8 @@ PLUGIN_IMG="$REGISTRY/jellyfin-distributed-plugin"    # plugin-only image-volume
 TAG="${1:-$(date +%Y%m).$(date +%d).1}"
 
 # The plugin-free server MUST carry a v12 version tag: JellyOps derives the server
-# version from the image tag to gate the plugin's targetAbi (12.0.0.0).
-SERVER_VERSION="12.0.0"
+# version from the image tag to gate the plugin's targetAbi (12.3.0.0).
+SERVER_VERSION="12.3.0"
 # The plugin image is versioned by the plugin version, read straight from meta.json so
 # the two can never drift apart.
 PLUGIN_VERSION="$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$REPO_ROOT/src/Plugin/meta.json" | head -1 | grep -oE '[0-9.]+' || true)"
@@ -79,7 +79,7 @@ echo "[build-push] building worker image (cpu variant)..."
 docker build -f "$REPO_ROOT/docker/Dockerfile.worker" --target cpu -t "$WORKER_IMG:$TAG" -t "$WORKER_IMG:latest" "$REPO_ROOT"
 echo "[build-push] building server-base image (plugin-free v12, web UI bundled)..."
 # The -web tag is a distinct pull target so a running node re-pulls when only the web
-# bundle changed (IfNotPresent won't re-pull an overwritten :12.0.0). Both parse to ABI 12.0.0.
+# bundle changed (IfNotPresent won't re-pull an overwritten :12.3.0). Both parse to ABI 12.3.0.
 docker build -t "$SERVERBASE_IMG:$SERVER_VERSION" -t "$SERVERBASE_IMG:$SERVER_VERSION-web" -t "$SERVERBASE_IMG:$TAG" -t "$SERVERBASE_IMG:latest" "$SBCTX"
 echo "[build-push] building plugin image (image-volume payload)..."
 # --provenance=false keeps the payload a single, plain manifest (no attestation index)

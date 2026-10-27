@@ -19,7 +19,7 @@ on:
       jellyfin_src_ref:
         description: "CrunchyMonkies/jellyfin ref (branch/tag) to build against"
         required: true
-        default: "v12.0.0-rc3-jc-0.2.1"
+        default: "v12.3-jc-0.2.4"
 
 permissions:
   contents: read
@@ -30,7 +30,7 @@ env:
   JELLYFIN_SRC_REPO: CrunchyMonkies/jellyfin
   # Build against the exact tag the deployed server image was built from, so the plugin's compiled
   # ABI matches the running host.
-  JELLYFIN_SRC_REF: ${{ github.event.inputs.jellyfin_src_ref || 'v12.0.0-rc3-jc-0.2.1' }}
+  JELLYFIN_SRC_REF: ${{ github.event.inputs.jellyfin_src_ref || 'v12.3-jc-0.2.4' }}
 
 jobs:
   build:

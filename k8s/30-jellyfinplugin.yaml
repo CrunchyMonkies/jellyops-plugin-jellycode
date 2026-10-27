@@ -12,6 +12,10 @@
 # Image references are pinned by digest — replace the placeholders with the @sha256
 # values printed by the CI run summary (the GHCR publish path); docker/build-push.sh
 # still pushes the legacy Harbor copies.
+#
+# TODO(0.4.2.0): the pluginImage and worker digests below are still the 0.4.1.0 builds
+# (targetAbi 12.0.0.0). Re-pin both to the digests printed by the v0.4.2.0 tag build
+# (plugin-image + worker-images workflows) once it has published.
 apiVersion: jellyfin.jellyops.io/v1alpha1
 kind: JellyfinPlugin
 metadata:
@@ -28,8 +32,8 @@ spec:
   meta:
     guid: b9f8c1a2-3d4e-4f5a-9b6c-7d8e9f0a1b2c
     name: "Distributed Transcoding"
-    version: "0.4.1.0"
-    targetAbi: "12.0.0.0"
+    version: "0.4.2.0"
+    targetAbi: "12.3.0.0"
   injection: imageVolumeCopy
   services:
     - name: jellycode-grpc
@@ -62,8 +66,9 @@ spec:
         # The worker image entrypoint reads these (DT_WORKER_ID defaults to the pod hostname).
         - name: DT_SERVER
           value: "http://jellycode-grpc.media.svc:9090"
-        - name: DT_FFMPEG
-          value: "/usr/bin/ffmpeg"
+        # DT_FFMPEG is intentionally not set: each worker image variant already points it at
+        # its jellyfin-ffmpeg8 binary (cpu/nvidia: /usr/lib/jellyfin-ffmpeg/ffmpeg, intel: the
+        # VAAPI wrapper). The images ship no /usr/bin/ffmpeg.
         - name: DT_MAX_CONCURRENT
           value: "2"
         - name: DT_SCRATCH

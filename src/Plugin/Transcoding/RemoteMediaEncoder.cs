@@ -30,8 +30,8 @@ namespace Jellyfin.Plugin.DistributedTranscoding.Transcoding;
 ///
 /// The argument construction below is reproduced from
 /// <c>MediaBrowser.MediaEncoding.Encoder.MediaEncoder.ExtractVideoImagesOnIntervalAccelerated</c> /
-/// <c>ExtractVideoImagesOnIntervalInternal</c> (MediaEncoder.cs:832) because those are private and we do not
-/// fork jellyfin-src. Re-sync this method if the upstream ffmpeg trickplay args change.
+/// <c>ExtractVideoImagesOnIntervalInternal</c> (MediaEncoder.cs:834/983 at fork tag v12.3-jc-0.2.4) because
+/// those are private. Re-sync this method if the upstream ffmpeg trickplay args change.
 /// </summary>
 public sealed class RemoteMediaEncoder : IMediaEncoder
 {
@@ -159,7 +159,10 @@ public sealed class RemoteMediaEncoder : IMediaEncoder
         EncodingHelper encodingHelper)
     {
         var options = allowHwAccel ? _serverConfig.GetEncodingOptions() : new EncodingOptions();
-        threads ??= EncodingHelper.GetNumberOfThreads(null, options, null);
+
+        // Core falls back to MediaEncoder._threads, which is computed from the *server* encoding options
+        // (not the throwaway EncodingOptions used when HW accel is disabled).
+        threads ??= EncodingHelper.GetNumberOfThreads(null, _serverConfig.GetEncodingOptions(), null);
 
         if (allowHwAccel && enableKeyFrameOnlyExtraction)
         {
@@ -224,10 +227,38 @@ public sealed class RemoteMediaEncoder : IMediaEncoder
         // Note: core also prepends videotoolbox "-hwaccel_flags +low_priority" when supported; workers are
         // Linux (no videotoolbox), so that branch is intentionally omitted here.
 
+        // Force the video stream, otherwise ffmpeg may pick an attached cover image (upstream 12.3).
+        var streamIndex = EncodingHelper.FindIndex(mediaSource.MediaStreams, imageStream);
+        if (streamIndex < 0)
+        {
+            throw new InvalidOperationException($"Unable to locate requested stream {imageStream.Title}");
+        }
+
+        inputArg += " -map 0:" + streamIndex.ToString(CultureInfo.InvariantCulture);
+
         var filterParam = encodingHelper.GetVideoProcessingFilterParam(jobState, options, vidEncoder).Trim();
         if (string.IsNullOrWhiteSpace(filterParam))
         {
             throw new InvalidOperationException("EncodingHelper returned empty or invalid filter parameters.");
+        }
+
+        // Normalize invalid PTS from containers for non keyframe only mode.
+        if (!enableKeyFrameOnlyExtraction)
+        {
+            var fpsFilterIndex = filterParam.IndexOf("fps=", StringComparison.Ordinal);
+            if (fpsFilterIndex >= 0)
+            {
+                var inputFrameRate = (imageStream.ReferenceFrameRate.HasValue && imageStream.ReferenceFrameRate > 0)
+                    ? imageStream.ReferenceFrameRate.Value : 30;
+
+                var setPtsFilter = string.Create(CultureInfo.InvariantCulture, $"setpts=N/{inputFrameRate:F3}/TB,");
+
+                filterParam = filterParam.Insert(fpsFilterIndex, setPtsFilter);
+            }
+            else
+            {
+                throw new InvalidOperationException("EncodingHelper returned invalid filter parameters.");
+            }
         }
 
         if (enableKeyFrameOnlyExtraction)
@@ -239,20 +270,20 @@ public sealed class RemoteMediaEncoder : IMediaEncoder
         var encoderQuality = Math.Clamp(qualityScale ?? 4, 1, 31);
         var encoderQualityOption = "-qscale:v ";
 
-        if (vidEncoder.Contains("vaapi", StringComparison.InvariantCultureIgnoreCase)
-            || vidEncoder.Contains("qsv", StringComparison.InvariantCultureIgnoreCase))
+        if (vidEncoder.Contains("vaapi", StringComparison.OrdinalIgnoreCase)
+            || vidEncoder.Contains("qsv", StringComparison.OrdinalIgnoreCase))
         {
             encoderQuality = 100 - ((encoderQuality - 1) * (100 / 30));
             encoderQualityOption = "-global_quality:v ";
         }
 
-        if (vidEncoder.Contains("videotoolbox", StringComparison.InvariantCultureIgnoreCase))
+        if (vidEncoder.Contains("videotoolbox", StringComparison.OrdinalIgnoreCase))
         {
             // videotoolbox's mjpeg encoder uses jpeg quality scaled to QP2LAMBDA (118).
             encoderQuality = 118 - ((encoderQuality - 1) * (118 / 30));
         }
 
-        if (vidEncoder.Contains("rkmpp", StringComparison.InvariantCultureIgnoreCase))
+        if (vidEncoder.Contains("rkmpp", StringComparison.OrdinalIgnoreCase))
         {
             encoderQuality = 99 - ((encoderQuality - 1) * (99 / 30));
             encoderQualityOption = "-qp_init:v ";
