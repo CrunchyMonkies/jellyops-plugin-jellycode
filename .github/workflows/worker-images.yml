@@ -10,6 +10,7 @@ on:
       - 'src/**'
       - 'docker/Dockerfile.worker'
       - 'docker/worker-entrypoint.sh'
+      - 'docker/vaapi-ffmpeg-wrap.sh'
       - 'Directory.Build.props'
       - '.github/workflows/worker-images.yml'
   workflow_dispatch:
