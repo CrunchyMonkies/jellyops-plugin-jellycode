@@ -351,39 +351,6 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
     // Job classification and software fallback
     // ----------------------------------------------------------------------------------------------
 
-    /// <summary>One step in the worker-selection sequence: a worker type to try (with an optional
-    /// requirement that it can hardware-decode the source), or an any-worker fallback.</summary>
-    private readonly record struct SelectionStage(string? Type, bool RequireHwDecode, bool AnyWorker);
-
-    /// <summary>
-    /// Builds the ordered selection stages for a job. Video-encode jobs get two passes over the
-    /// resolved worker-type priority — first preferring workers that can hardware-decode the source,
-    /// then relaxed. Copy/audio jobs prefer a non-GPU worker, then any worker.
-    /// </summary>
-    private static List<SelectionStage> BuildSelectionStages(bool isVideoEncode, string[] priority)
-    {
-        var stages = new List<SelectionStage>();
-        if (isVideoEncode)
-        {
-            foreach (var t in priority)
-            {
-                stages.Add(new SelectionStage(t, RequireHwDecode: true, AnyWorker: false));
-            }
-
-            foreach (var t in priority)
-            {
-                stages.Add(new SelectionStage(t, RequireHwDecode: false, AnyWorker: false));
-            }
-        }
-        else
-        {
-            stages.Add(new SelectionStage("cpu", RequireHwDecode: false, AnyWorker: false));
-            stages.Add(new SelectionStage(Type: null, RequireHwDecode: false, AnyWorker: true));
-        }
-
-        return stages;
-    }
-
     /// <summary>Builds the worker predicate for a selection stage: type match + enabled + concurrency,
     /// plus (for encodes) a best-effort encode-capability gate, optional hw-decode requirement, and
     /// an audio-encoder gate when the job needs a specific audio encoder.</summary>
@@ -644,7 +611,7 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
         var encodeCodec = isCopy ? "copy" : state.ActualOutputVideoCodec;
         var requiredAudioEncoder = WorkerTypeArgs.ParseAudioEncoder(commandLineArguments);
         var priority = Config.ResolveWorkerPriority(decodeCodec, encodeCodec);
-        var stages = BuildSelectionStages(isVideoEncode, priority);
+        var stages = SelectionStages.Build(isVideoEncode, priority);
         _logger.LogInformation(
             "Routing job decode={Decode} encode={Encode} -> priority [{Priority}]",
             decodeCodec ?? "?", encodeCodec ?? "?", string.Join(",", priority));
@@ -680,7 +647,13 @@ public sealed class RemoteTranscodeManager : ITranscodeManager, IRemoteFrameSink
             WorkerConnection worker;
             try
             {
-                worker = await _registry.GetWorkerAsync(timeout, predicate, excluded, cancellationTokenSource.Token).ConfigureAwait(false);
+                // Only wait out the timeout when a connected worker could take this stage; otherwise
+                // skip it at once so a missing pool doesn't stall playback for the full timeout.
+                var connectedTypes = _registry.Snapshot().Select(w => w.WorkerType).ToArray();
+                var stageTimeout = SelectionStages.ShouldWait(stage, stageIndex == stages.Count - 1, connectedTypes, t => Config.OptionsFor(t).Enabled)
+                    ? timeout
+                    : TimeSpan.Zero;
+                worker = await _registry.GetWorkerAsync(stageTimeout, predicate, excluded, cancellationTokenSource.Token).ConfigureAwait(false);
             }
             catch (TimeoutException)
             {

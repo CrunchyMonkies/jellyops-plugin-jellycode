@@ -78,7 +78,7 @@ docker/run.sh down      # stop & remove
 On boot you should see in the logs:
 
 ```
-PluginManager: Loaded plugin: Distributed Transcoding 0.4.2.0
+PluginManager: Loaded plugin: Distributed Transcoding 0.4.3.0
 GrpcHostedService: Distributed transcoding gRPC listener started on 0.0.0.0:9090 (h2c)
 WorkerRegistry: Worker registered: docker-w1 (maxConcurrent=2)
 ```
@@ -129,7 +129,7 @@ Published to `harbor.bne1.ouchi.com.au/applications/`:
 | `jellyfin-distributed-server:<tag>` | Jellyfin v12 (built from `../jellyfin-src`) + the plugin baked in. No embedded worker; hosts the gRPC mesh on :9090. Headless (`--nowebclient`). Non-operator docker path. |
 | `jellyfin-distributed-worker:<tag>` | Standalone ffmpeg worker that dials the server and streams segments back. The horizontally-scaled artifact. |
 | `jellyfin-server:12.3.0` | **Plugin-free** Jellyfin v12 — the `Jellyfin` CR `spec.image` for the JellyOps path. The `12.3.0` tag satisfies the plugin's `targetAbi`. |
-| `jellyfin-distributed-plugin:0.4.2.0` | **Plugin-only image-volume payload** (`meta.json` + DLLs at root) that JellyOps mounts and injects. |
+| `jellyfin-distributed-plugin:0.4.3.0` | **Plugin-only image-volume payload** (`meta.json` + DLLs at root) that JellyOps mounts and injects. |
 
 Tags: a date-based `YYYYMM.DD.N` plus `latest`. Build & push both (requires
 `docker login harbor.bne1.ouchi.com.au`):
@@ -333,7 +333,7 @@ docker run -d --name jellyfin-worker-gpu \
    ```bash
    scripts/deploy-plugin.sh [PLUGINS_DIR]   # default ~/.local/share/jellyfin/plugins
    ```
-   Stages to `<PLUGINS_DIR>/Distributed Transcoding_0.4.2.0/` (plugin + Contracts + Grpc + meta.json).
+   Stages to `<PLUGINS_DIR>/Distributed Transcoding_0.4.3.0/` (plugin + Contracts + Grpc + meta.json).
 
 2. **Start a worker** (same host as the server in Phase 0, sharing media + transcode paths so the
    identity `PathMap` works). Point `--ffmpeg` at the same binary the server reports as its encoder

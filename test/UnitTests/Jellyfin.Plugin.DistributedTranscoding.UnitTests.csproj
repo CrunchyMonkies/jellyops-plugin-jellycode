@@ -20,6 +20,7 @@
     <Compile Include="../../src/Plugin/Transcoding/WorkerTypeArgs.cs" />
     <Compile Include="../../src/Plugin/Configuration/WorkerTypeOptions.cs" />
     <Compile Include="../../src/Plugin/Configuration/RoutingRule.cs" />
+    <Compile Include="../../src/Plugin/Transcoding/SelectionStages.cs" />
     <Compile Include="../../src/Worker/FfmpegCapabilities.cs" />
   </ItemGroup>
 
